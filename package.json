@@ -9,11 +9,13 @@
     "test": "npm i --silent && tsc --noEmit && eslint --cache && vitest run --reporter=dot --silent && vite build -l error && cp dist/index.html dist/404.html && echo 'All tests passed!'"
   },
   "dependencies": {
+    "@getalby/sdk": "^8.0.3",
     "@nostrify/nostrify": "^0.52.2",
     "@nostrify/react": "^0.6.2",
     "@radix-ui/react-toast": "^1.2.1",
     "@tanstack/react-query": "^5.100.5",
     "@unhead/react": "^3.1.0",
+    "@webbtc/webln-types": "^3.0.0",
     "buffer": "^6.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
