@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { useLightningWallet } from '@/hooks/useLightningWallet';
+import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { cn } from '@/lib/utils';
 import { formatSats } from '@/lib/pontmore';
 
@@ -24,7 +24,7 @@ const NAV_LINKS = [
 export function Navbar() {
   const location = useLocation();
   const { user } = useCurrentUser();
-  const { hasWallet, balance } = useLightningWallet();
+  const { hasWallet, balance } = useUnifiedWallet();
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/80 backdrop-blur-xl">

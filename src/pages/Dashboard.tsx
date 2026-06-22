@@ -33,7 +33,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { useLightningWallet } from '@/hooks/useLightningWallet';
+import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { useAgents } from '@/hooks/useAgents';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
 import { formatSats, estimateFiat } from '@/lib/pontmore';
@@ -55,7 +55,7 @@ export default function Dashboard() {
     setAction(actionParam);
   }, [actionParam]);
 
-  const { hasWallet, balance, balanceLoading, refreshBalance } = useLightningWallet();
+  const { hasWallet, balance, balanceLoading, refreshBalance } = useUnifiedWallet();
   const { localSwaps } = useSwapStateMachine();
 
   useSeoMeta({
@@ -287,7 +287,7 @@ function SwapRow({ swap }: { swap: import('@/hooks/useSwapStateMachine').LocalSw
 
 function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const { agents, isLoading } = useAgents();
-  const { hasWallet } = useLightningWallet();
+  const { hasWallet } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
   const [selectedAgentPubkey, setSelectedAgentPubkey] = useState(preselectedAgent ?? '');
   const [amountSats, setAmountSats] = useState('');
@@ -407,7 +407,7 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
 
 function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const { agents, isLoading } = useAgents();
-  const { hasWallet, balance, makeInvoice, isCreatingInvoice } = useLightningWallet();
+  const { hasWallet, balance, makeInvoice, isCreatingInvoice } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
   const [selectedAgentPubkey, setSelectedAgentPubkey] = useState(preselectedAgent ?? '');
   const [amountSats, setAmountSats] = useState('');
@@ -560,7 +560,7 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
 // ─── Transfer Form (Lightning P2P) ──────────────────────────────
 
 function TransferForm() {
-  const { hasWallet, balance, payInvoice } = useLightningWallet();
+  const { hasWallet, balance, payInvoice } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
   const [recipientPubkey, setRecipientPubkey] = useState('');
   const [recipientName, setRecipientName] = useState('');
