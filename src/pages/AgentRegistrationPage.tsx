@@ -45,34 +45,60 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { useAgentRegistration, type AgentRegistrationInput } from '@/hooks/useAgentRegistration';
+import {
+  useAgentRegistration,
+  type AgentRegistrationInput,
+} from '@/hooks/useAgentRegistration';
 import { formatSats } from '@/lib/pontmore';
+import type { AgentCapabilities } from '@/lib/pontmore';
 
 const ALL_CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
-const SERVICE_CATEGORIES = ['deposit', 'withdrawal', 'exchange', 'remittance', 'otc'];
+const SWAP_TYPES = ['deposit', 'withdrawal', 'transfer'];
+const PAYMENT_CHANNELS = ['cash', 'bank_transfer', 'mobile_money', 'm_pesa', 'ach', 'sepa'];
+const SETTLEMENT_NETWORKS = ['lightning', 'bitcoin'];
+const REGIONS = [
+  'East Africa', 'West Africa', 'Southern Africa', 'North Africa',
+  'Europe', 'North America', 'South America', 'Asia', 'Global',
+];
 
-const EMPTY_INPUT: AgentRegistrationInput = {
-  identifier: '',
-  name: '',
-  bio: '',
-  geo: '',
-  currencies: [],
-  rate: '1.5',
-  hours: 'Mon-Sun 08:00-20:00',
-  phone: '',
-  lud16: '',
-  minAmount: 1000,
-  maxAmount: 500000,
-  liquiditySats: 0,
-  categories: ['deposit', 'withdrawal'],
-};
+function defaultInput(): AgentRegistrationInput {
+  return {
+    identifier: 'agent',
+    name: '',
+    about: '',
+    capabilities: {
+      swapTypes: ['deposit', 'withdrawal'],
+      fiatCurrencies: [],
+      paymentChannels: ['cash', 'mobile_money'],
+      settlementNetworks: ['lightning'],
+      regions: [],
+      minAmount: 1000,
+      maxAmount: 500000,
+      pricingMargin: '1.5',
+    },
+    pricingPolicy: 'percentage_margin',
+    escrow: {
+      identifier: 'default',
+      escrowType: 'lightning_hold_invoice',
+      networks: ['bitcoin', 'lightning'],
+      fundingRules: { required_confirmation: 'invoice_held' },
+      releaseRules: { release_trigger: 'counterparty_fiat_payment_confirmed' },
+      disputeRules: { policy: 'operator_resolved' },
+      referenceFormat: 'bolt11',
+      invoiceNetwork: 'lightning',
+      payoutNetwork: 'lightning',
+    },
+    fiatCurrencies: [],
+    relays: [],
+  };
+}
 
 export default function AgentRegistrationPage() {
   const { user } = useCurrentUser();
-  const { myAgent, isRegistered, isLoading, publishRegistration, deleteRegistration, agentToInput } =
+  const { myAgent, isRegistered, isLoading, publishRegistration, deleteRegistration, agentToInput, defaultRelays } =
     useAgentRegistration();
 
-  const [input, setInput] = useState<AgentRegistrationInput>(EMPTY_INPUT);
+  const [input, setInput] = useState<AgentRegistrationInput>(defaultInput);
   const [loadedExisting, setLoadedExisting] = useState(false);
 
   useSeoMeta({
@@ -80,7 +106,7 @@ export default function AgentRegistrationPage() {
     description: 'Register as a Pontmore agent and become discoverable on the network.',
   });
 
-  // Pre-fill the form when the user's existing registration loads
+  // Pre-fill form with existing registration + default relays
   useEffect(() => {
     if (myAgent && !loadedExisting) {
       setInput(agentToInput(myAgent));
@@ -88,17 +114,12 @@ export default function AgentRegistrationPage() {
     }
   }, [myAgent, loadedExisting, agentToInput]);
 
-  // Auto-generate identifier from name for new registrations
+  // Set default relays for new registrations
   useEffect(() => {
-    if (!isRegistered && !input.identifier && input.name) {
-      const slug = input.name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 40);
-      setInput((prev) => ({ ...prev, identifier: `pontmore-${slug}` }));
+    if (!isRegistered && input.relays.length === 0 && defaultRelays.length > 0) {
+      setInput((prev) => ({ ...prev, relays: defaultRelays }));
     }
-  }, [input.name, input.identifier, isRegistered]);
+  }, [isRegistered, input.relays, defaultRelays]);
 
   if (!user) {
     return (
@@ -110,8 +131,8 @@ export default function AgentRegistrationPage() {
           <h1 className="text-2xl font-bold">Become a Pontmore Agent</h1>
           <p className="mt-3 text-muted-foreground">
             Log in with your Nostr identity to register as an agent on the
-            Pontmore network. Agents convert between Bitcoin and local fiat
-            currencies, earning commission on every transaction.
+            Pontmore network (PIP-00). Agents publish capabilities and conduct
+            swaps, earning commission on every transaction.
           </p>
           <Button asChild className="mt-6">
             <Link to="/">Join PontPay</Link>
@@ -127,27 +148,18 @@ export default function AgentRegistrationPage() {
   const handleField = <K extends keyof AgentRegistrationInput>(
     key: K,
     value: AgentRegistrationInput[K],
-  ) => {
-    setInput((prev) => ({ ...prev, [key]: value }));
-  };
+  ) => setInput((prev) => ({ ...prev, [key]: value }));
 
-  const toggleCurrency = (currency: string) => {
-    setInput((prev) => ({
-      ...prev,
-      currencies: prev.currencies.includes(currency)
-        ? prev.currencies.filter((c) => c !== currency)
-        : [...prev.currencies, currency],
-    }));
-  };
+  const handleCapability = <K extends keyof AgentCapabilities>(
+    key: K,
+    value: AgentCapabilities[K],
+  ) => setInput((prev) => ({
+    ...prev,
+    capabilities: { ...prev.capabilities, [key]: value },
+  }));
 
-  const toggleCategory = (category: string) => {
-    setInput((prev) => ({
-      ...prev,
-      categories: prev.categories.includes(category)
-        ? prev.categories.filter((c) => c !== category)
-        : [...prev.categories, category],
-    }));
-  };
+  const toggleArrayItem = <T,>(arr: T[], item: T): T[] =>
+    arr.includes(item) ? arr.filter((i) => i !== item) : [...arr, item];
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -155,14 +167,9 @@ export default function AgentRegistrationPage() {
     publishRegistration.mutate(input);
   };
 
-  const handleDelete = () => {
-    deleteRegistration.mutate(input.identifier);
-  };
-
   return (
     <AppLayout>
       <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Back link */}
         <Link
           to="/agents"
           className="mb-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -179,12 +186,10 @@ export default function AgentRegistrationPage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-                {isRegistered ? 'Edit Agent Listing' : 'Become a Pontmore Agent'}
+                {isRegistered ? 'Edit Agent Definition' : 'Become a Pontmore Agent'}
               </h1>
               <p className="mt-1 text-muted-foreground">
-                {isRegistered
-                  ? 'Update your agent registration on the network.'
-                  : 'Register and become discoverable to users worldwide.'}
+                PIP-00 agent definition · kind 30360
               </p>
             </div>
           </div>
@@ -206,11 +211,14 @@ export default function AgentRegistrationPage() {
                 <p className="text-sm font-medium text-green-600">You are a registered agent</p>
                 <p className="mt-0.5 text-sm text-muted-foreground">
                   Your listing <strong>{myAgent.name}</strong> is live and discoverable
-                  {myAgent.geo ? ` in ${myAgent.geo}` : ''}.
+                  on the Pontmore network.
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {myAgent.currencies.map((c) => (
+                  {myAgent.fiatCurrencies.map((c) => (
                     <Badge key={c} variant="secondary" className="text-xs">{c}</Badge>
+                  ))}
+                  {myAgent.capabilities.regions.map((r) => (
+                    <Badge key={r} variant="outline" className="text-xs">{r}</Badge>
                   ))}
                 </div>
               </div>
@@ -218,19 +226,18 @@ export default function AgentRegistrationPage() {
           </Card>
         ) : null}
 
-        {/* Registration form */}
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Basic info */}
+          {/* PIP-00: Basic Information */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Basic Information</CardTitle>
+              <CardTitle className="text-lg">Agent Identity (PIP-00)</CardTitle>
               <CardDescription>
-                This is how users will identify you on the agent directory.
+                Public agent capability and discovery record.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
-                <Label htmlFor="name">Agent / booth name *</Label>
+                <Label htmlFor="name">Agent name *</Label>
                 <Input
                   id="name"
                   placeholder="e.g. Nairobi Central Exchange"
@@ -241,93 +248,105 @@ export default function AgentRegistrationPage() {
               </div>
 
               <div>
-                <Label htmlFor="bio">Bio / description</Label>
+                <Label htmlFor="about">About / description</Label>
                 <Textarea
-                  id="bio"
+                  id="about"
                   placeholder="Describe your services, experience, and what makes you a trusted agent."
-                  value={input.bio}
-                  onChange={(e) => handleField('bio', e.target.value)}
+                  value={input.about}
+                  onChange={(e) => handleField('about', e.target.value)}
                   rows={3}
                 />
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <Label htmlFor="geo" className="flex items-center gap-1.5">
-                    <MapPin className="h-3.5 w-3.5" /> Location
-                  </Label>
+                  <Label htmlFor="identifier">Profile identifier (d-tag)</Label>
                   <Input
-                    id="geo"
-                    placeholder="e.g. Nairobi, Kenya"
-                    value={input.geo}
-                    onChange={(e) => handleField('geo', e.target.value)}
+                    id="identifier"
+                    className="font-mono text-sm"
+                    placeholder="agent"
+                    value={input.identifier}
+                    onChange={(e) => handleField('identifier', e.target.value)}
+                    disabled={isRegistered}
                   />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Usually <code className="rounded bg-muted px-1">agent</code>. Use
+                    <code className="rounded bg-muted px-1">agent:ke</code> for regional profiles.
+                  </p>
                 </div>
                 <div>
-                  <Label htmlFor="phone" className="flex items-center gap-1.5">
-                    <Phone className="h-3.5 w-3.5" /> Contact phone
-                  </Label>
-                  <Input
-                    id="phone"
-                    placeholder="e.g. +254 700 000 000"
-                    value={input.phone}
-                    onChange={(e) => handleField('phone', e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <Label htmlFor="hours" className="flex items-center gap-1.5">
-                    <Clock className="h-3.5 w-3.5" /> Operating hours
-                  </Label>
-                  <Input
-                    id="hours"
-                    placeholder="e.g. Mon-Sun 08:00-20:00"
-                    value={input.hours}
-                    onChange={(e) => handleField('hours', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="lud16" className="flex items-center gap-1.5">
-                    <Zap className="h-3.5 w-3.5" /> Lightning address
-                  </Label>
-                  <Input
-                    id="lud16"
-                    placeholder="e.g. agent@getalby.com"
-                    value={input.lud16}
-                    onChange={(e) => handleField('lud16', e.target.value)}
-                  />
+                  <Label htmlFor="pricing">Pricing policy</Label>
+                  <Select
+                    value={input.pricingPolicy}
+                    onValueChange={(v) => handleField('pricingPolicy', v)}
+                  >
+                    <SelectTrigger id="pricing">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="percentage_margin">Percentage margin</SelectItem>
+                      <SelectItem value="flat_fee">Flat fee per swap</SelectItem>
+                      <SelectItem value="tiered">Tiered pricing</SelectItem>
+                      <SelectItem value="negotiated">Negotiated per swap</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* Currencies & services */}
+          {/* PIP-00: Capabilities */}
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
-                <Coins className="h-5 w-5" /> Currencies &amp; Services
+                <Coins className="h-5 w-5" /> Capabilities
               </CardTitle>
               <CardDescription>
-                Select which fiat currencies you handle and what services you offer.
+                Declare what swap types, currencies, and channels you support.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Swap types */}
               <div>
-                <Label>Supported fiat currencies</Label>
+                <Label>Supported swap types</Label>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {SWAP_TYPES.map((type) => {
+                    const selected = input.capabilities.swapTypes.includes(type);
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => handleCapability('swapTypes', toggleArrayItem(input.capabilities.swapTypes, type))}
+                        className={`rounded-lg border px-3 py-1.5 text-sm font-medium capitalize transition-all ${
+                          selected ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {type}
+                        {selected && <CheckCircle2 className="ml-1 inline h-3 w-3" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Fiat currencies */}
+              <div>
+                <Label>Fiat currencies</Label>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {ALL_CURRENCIES.map((c) => {
-                    const selected = input.currencies.includes(c);
+                    const selected = input.fiatCurrencies.includes(c);
                     return (
                       <button
                         key={c}
                         type="button"
-                        onClick={() => toggleCurrency(c)}
+                        onClick={() => {
+                          handleField('fiatCurrencies', toggleArrayItem(input.fiatCurrencies, c));
+                          handleCapability('fiatCurrencies', toggleArrayItem(input.capabilities.fiatCurrencies, c));
+                        }}
                         className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-all ${
-                          selected
-                            ? 'border-primary bg-primary/10 text-primary'
-                            : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                          selected ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'
                         }`}
                       >
                         {c}
@@ -340,147 +359,215 @@ export default function AgentRegistrationPage() {
 
               <Separator />
 
+              {/* Payment channels */}
               <div>
-                <Label>Service categories</Label>
+                <Label>Payment channels</Label>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {SERVICE_CATEGORIES.map((cat) => {
-                    const selected = input.categories.includes(cat);
+                  {PAYMENT_CHANNELS.map((ch) => {
+                    const selected = input.capabilities.paymentChannels.includes(ch);
                     return (
                       <button
-                        key={cat}
+                        key={ch}
                         type="button"
-                        onClick={() => toggleCategory(cat)}
+                        onClick={() => handleCapability('paymentChannels', toggleArrayItem(input.capabilities.paymentChannels, ch))}
                         className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium capitalize transition-all ${
-                          selected
-                            ? 'border-primary bg-primary/10 text-primary'
-                            : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                          selected ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'
                         }`}
                       >
-                        {cat}
+                        {ch.replace(/_/g, ' ')}
                         {selected && <CheckCircle2 className="h-3 w-3" />}
                       </button>
                     );
                   })}
                 </div>
               </div>
+
+              <Separator />
+
+              {/* Regions */}
+              <div>
+                <Label className="flex items-center gap-1.5">
+                  <MapPin className="h-3.5 w-3.5" /> Regions served
+                </Label>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {REGIONS.map((r) => {
+                    const selected = input.capabilities.regions.includes(r);
+                    return (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => handleCapability('regions', toggleArrayItem(input.capabilities.regions, r))}
+                        className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-all ${
+                          selected ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {r}
+                        {selected && <CheckCircle2 className="ml-1 inline h-3 w-3" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Limits */}
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <Label htmlFor="minAmount">Min amount (sats)</Label>
+                  <Input
+                    id="minAmount"
+                    type="number"
+                    min="1"
+                    value={input.capabilities.minAmount || ''}
+                    onChange={(e) => handleCapability('minAmount', parseInt(e.target.value) || 0)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="maxAmount">Max amount (sats)</Label>
+                  <Input
+                    id="maxAmount"
+                    type="number"
+                    min="1"
+                    value={input.capabilities.maxAmount || ''}
+                    onChange={(e) => handleCapability('maxAmount', parseInt(e.target.value) || 0)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="margin">Margin (%)</Label>
+                  <Input
+                    id="margin"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="20"
+                    value={input.capabilities.pricingMargin || ''}
+                    onChange={(e) => handleCapability('pricingMargin', e.target.value)}
+                  />
+                </div>
+              </div>
             </CardContent>
           </Card>
 
-          {/* Transaction limits & commission */}
+          {/* PIP-01: Escrow Descriptor */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Transaction Limits &amp; Commission</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Shield className="h-5 w-5" /> Escrow Descriptor (PIP-01)
+              </CardTitle>
               <CardDescription>
-                Set your operating parameters. These are visible to users browsing the directory.
+                Public escrow declaration referenced by your agent definition.
+                kind 30361.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <Label htmlFor="rate">Commission rate (%)</Label>
-                  <Input
-                    id="rate"
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="20"
-                    placeholder="1.5"
-                    value={input.rate}
-                    onChange={(e) => handleField('rate', e.target.value)}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Your fee as a percentage of each transaction.
-                  </p>
+                  <Label htmlFor="escrow-type">Escrow type</Label>
+                  <Select
+                    value={input.escrow.escrowType}
+                    onValueChange={(v) => setInput((prev) => ({
+                      ...prev,
+                      escrow: { ...prev.escrow, escrowType: v },
+                    }))}
+                  >
+                    <SelectTrigger id="escrow-type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="lightning_hold_invoice">Lightning hold invoice</SelectItem>
+                      <SelectItem value="custodial_escrow">Custodial escrow</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
-                  <Label htmlFor="liquidity">Lightning liquidity (sats)</Label>
-                  <Input
-                    id="liquidity"
-                    type="number"
-                    min="0"
-                    placeholder="0"
-                    value={input.liquiditySats || ''}
-                    onChange={(e) => handleField('liquiditySats', parseInt(e.target.value) || 0)}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Self-reported available balance: {formatSats(input.liquiditySats)}
-                  </p>
+                  <Label htmlFor="ref-format">Reference format</Label>
+                  <Select
+                    value={input.escrow.referenceFormat}
+                    onValueChange={(v) => setInput((prev) => ({
+                      ...prev,
+                      escrow: { ...prev.escrow, referenceFormat: v },
+                    }))}
+                  >
+                    <SelectTrigger id="ref-format">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="bolt11">BOLT11</SelectItem>
+                      <SelectItem value="bolt11_or_custodial_escrow_reference">BOLT11 or custodial ref</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <Label htmlFor="minAmount">Minimum transaction (sats)</Label>
-                  <Input
-                    id="minAmount"
-                    type="number"
-                    min="1"
-                    placeholder="1000"
-                    value={input.minAmount || ''}
-                    onChange={(e) => handleField('minAmount', parseInt(e.target.value) || 0)}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="maxAmount">Maximum transaction (sats)</Label>
-                  <Input
-                    id="maxAmount"
-                    type="number"
-                    min="1"
-                    placeholder="500000"
-                    value={input.maxAmount || ''}
-                    onChange={(e) => handleField('maxAmount', parseInt(e.target.value) || 0)}
-                  />
+              <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm">
+                <p className="font-medium">Escrow configuration</p>
+                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                  <p><strong className="text-foreground">Networks:</strong> {input.escrow.networks.join(', ')}</p>
+                  <p><strong className="text-foreground">Funding:</strong> {input.escrow.fundingRules.required_confirmation}</p>
+                  <p><strong className="text-foreground">Release:</strong> {input.escrow.releaseRules.release_trigger}</p>
+                  <p><strong className="text-foreground">Dispute:</strong> {input.escrow.disputeRules.policy}</p>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* Identifier (advanced) */}
+          {/* Relays */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Agent Identifier</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Globe className="h-5 w-5" /> Relay Preferences
+              </CardTitle>
               <CardDescription>
-                The unique slug used on Nostr. Auto-generated from your name —
-                change only if needed.
+                Relays where your agent definition is published and reachable.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center gap-2">
-                <Label htmlFor="identifier" className="sr-only">Identifier</Label>
-                <div className="flex items-center gap-1.5 rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                  <Globe className="h-4 w-4" />
-                  <span className="font-mono text-xs">kind:33939 / d:</span>
-                </div>
-                <Input
-                  id="identifier"
-                  className="flex-1 font-mono text-sm"
-                  placeholder="pontmore-nairobi-central"
-                  value={input.identifier}
-                  onChange={(e) => handleField('identifier', e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
-                  disabled={isRegistered}
-                />
+              <div className="space-y-2">
+                {input.relays.map((relay, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input
+                      value={relay}
+                      onChange={(e) => {
+                        const updated = [...input.relays];
+                        updated[i] = e.target.value;
+                        handleField('relays', updated);
+                      }}
+                      className="font-mono text-sm"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleField('relays', input.relays.filter((_, idx) => idx !== i))}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleField('relays', [...input.relays, ''])}
+                >
+                  Add relay
+                </Button>
               </div>
-              {isRegistered && (
-                <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-600">
-                  <Info className="h-3.5 w-3.5" />
-                  The identifier cannot be changed for an existing listing (it
-                  would create a new registration).
-                </p>
-              )}
             </CardContent>
           </Card>
 
           {/* Info box */}
           <div className="flex items-start gap-3 rounded-xl border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            <Shield className="mt-0.5 h-5 w-5 shrink-0 text-green-500" />
+            <Info className="mt-0.5 h-5 w-5 shrink-0 text-blue-500" />
             <div>
               <p className="font-medium text-foreground">How registration works</p>
               <p className="mt-1">
-                Your agent listing is published as a Nostr addressable event
-                (kind 33939) signed by your identity. It&apos;s stored on
-                decentralized relays — no central server controls it. Users
-                discover you via the Pontmore agent directory. You can update
-                or delete your listing at any time.
+                Your agent definition is published as a Nostr addressable event
+                (kind 30360) with a companion escrow descriptor (kind 30361).
+                Both are signed by your Nostr identity and stored on
+                decentralized relays. Users discover you via the Pontmore agent
+                directory. You can update or delete your listing at any time.
               </p>
             </div>
           </div>
@@ -512,14 +599,14 @@ export default function AgentRegistrationPage() {
                       <AlertDialogTitle>Delete your agent listing?</AlertDialogTitle>
                       <AlertDialogDescription>
                         This sends a NIP-09 deletion event to relays. Users will
-                        no longer find you in the directory. This action cannot
-                        be undone (though you can re-register at any time).
+                        no longer find you in the directory. You can re-register
+                        at any time.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <AlertDialogCancel>Cancel</AlertDialogCancel>
                       <AlertDialogAction
-                        onClick={handleDelete}
+                        onClick={() => deleteRegistration.mutate(input.identifier)}
                         className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                       >
                         Delete listing

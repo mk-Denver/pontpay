@@ -1,162 +1,143 @@
-# Pontmore Protocol — NIP
+# PontPay — Pontmore Protocol Implementation
 
-The **Pontmore Protocol** defines a Nostr-based communication layer for an
-M-Pesa-style agent network that settles value over the Bitcoin Lightning
-Network. All transaction requests, confirmations, and status updates are
-securely transmitted and received via Nostr relays using encrypted
-direct messages (NIP-17 / NIP-44) and a dedicated addressable kind for
-agent registration.
+This document describes how PontPay implements the **Pontmore Protocol** —
+a Nostr-native protocol family for agent identity, capability discovery,
+escrow declaration, and swap lifecycle coordination.
 
-## Kind 33939 — Pontmore Agent Registration (Addressable)
+**Canonical spec:** https://github.com/pontmore/protocol
 
-An agent publishes a kind `33939` event to register themselves on the
-Pontmore agent network. The `d` tag is a unique agent identifier (slug).
-Only the latest event per `pubkey + kind + d` is kept by relays.
+## PIPs Implemented
 
-### Tags
+| PIP | Title | Kind(s) | Status |
+|-----|-------|---------|--------|
+| PIP-00 | Agent Definition | 30360 | Implemented |
+| PIP-01 | Escrow Descriptor | 30361 | Implemented |
+| PIP-02 | Swap State Machine | 7300, 7301, 7302, 7303, 7304, 30362 | Implemented |
+| PIP-03 | Dispute Policy | 7303 | Implemented (dispute events) |
 
-| Tag     | Required | Description                                                  |
-|---------|----------|--------------------------------------------------------------|
-| `d`     | yes      | Unique agent identifier (e.g. `agent-nairobi-001`)           |
-| `name`  | yes      | Display name of the agent / agent booth                      |
-| `t`     | yes      | `pontmore-agent` — enables relay-level discovery             |
-| `t`     | no       | Additional category tags (e.g. `deposit`, `withdrawal`)      |
-| `geo`   | no       | Human-readable location (e.g. `Nairobi, Kenya`)              |
-| `currency` | no   | Fiat currencies the agent supports (repeatable)             |
-| `rate`  | no       | Commission / spread as a percentage (e.g. `1.5`)             |
-| `hours` | no       | Operating hours (e.g. `Mon-Sun 08:00-20:00`)                 |
-| `phone` | no       | Contact phone number                                         |
-| `lud16` | no       | Lightning address for direct Lightning payments              |
-| `alt`   | yes      | NIP-31 human-readable description                            |
+## PIP-00: Agent Definition (kind 30360)
 
-### Content
+Agents publish a kind 30360 addressable event to register on the network.
 
-JSON object with extended agent metadata:
+- `d` tag: stable identifier (usually `agent`)
+- `t` tag: `agent` for relay-level discovery
+- `relay` tags: relay preferences (required)
+- `a` tag: reference to the default escrow descriptor (kind 30361 coordinate)
+- `f` tags: supported fiat currencies (recommended)
+- Content: JSON with `version`, `name`, `about`, `capabilities`, `pricing_policy`, `escrow`, `updated_at`
 
-```json
-{
-  "bio": "Trusted Pontmore agent serving downtown Nairobi.",
-  "currencies": ["KES", "USD", "UGX"],
-  "minAmount": 1000,
-  "maxAmount": 500000,
-  "liquiditySats": 2500000,
-  "verificationLevel": "verified"
-}
-```
-
-### Querying
-
-Agents are discoverable at the relay level:
+### Discovery
 
 ```ts
-nostr.query([{ kinds: [33939], '#t': ['pontmore-agent'], limit: 50 }]);
-```
-
-To fetch a specific agent's listing (e.g. for editing):
-
-```ts
-nostr.query([{
-  kinds: [33939],
-  authors: [agentPubkey],
-  '#t': ['pontmore-agent'],
-  limit: 1,
-}]);
+nostr.query([{ kinds: [30360], '#t': ['agent'], limit: 100 }]);
 ```
 
 ### Registration Flow
 
-1. The agent fills out a registration form (name, location, currencies,
-   commission rate, operating hours, contact info, Lightning address,
-   transaction limits, and liquidity).
-2. The client builds a kind 33939 event with the appropriate tags and a
-   JSON `content` payload containing extended metadata.
-3. The event is signed by the agent's Nostr identity and published to
-   relays. It is immediately discoverable in the agent directory.
-4. **Updating** — re-publishing with the same `d` tag replaces the
-   previous event on relays (addressable semantics).
-5. **Deletion** — a NIP-09 kind 5 event is published with an `a` tag
-   referencing the addressable coordinate
-   (`33939:<pubkey>:<d-identifier>`), signaling to relays and clients
-   that the listing should be removed.
+1. Agent fills out registration form (name, capabilities, currencies, regions, limits)
+2. Client publishes a companion escrow descriptor (kind 30361) first
+3. Client publishes the agent definition (kind 30360) referencing the escrow via `a` tag
+4. Updating: re-publish with same `d` tag (addressable replacement)
+5. Deletion: NIP-09 kind 5 event with `a` tag referencing the coordinate
 
-### Content Schema
+## PIP-01: Escrow Descriptor (kind 30361)
 
-```json
-{
-  "bio": "Trusted Pontmore agent serving downtown Nairobi.",
-  "currencies": ["KES", "USD", "UGX"],
-  "minAmount": 1000,
-  "maxAmount": 500000,
-  "liquiditySats": 2500000,
-  "verificationLevel": "registered"
-}
-```
+Public escrow declaration referenced by agent definitions and swaps.
 
----
+- `d` tag: stable identifier (usually `default`)
+- `network` tags: settlement networks for relay filtering
+- Content: JSON with `version`, `escrow_type`, `networks`, `funding_rules`, `release_rules`, `dispute_rules`, `reference_format`, `updated_at`
 
-## Transaction Messages — NIP-17 Encrypted Direct Messages
+### Supported Escrow Types
 
-Transaction requests, confirmations, and status updates are sent as
-**NIP-17 gift-wrapped direct messages** (kinds 13/14/15). The plaintext
-content (after NIP-44 decryption) is a JSON envelope following the
-**Pontmore Message Schema** below.
+- `lightning_hold_invoice` — Lightning hold invoice as escrow lock
+- `custodial_escrow` — Operator custody with network-specific implementations
 
-Using NIP-17 ensures end-to-end encryption between the user and the
-agent (or between two peers). The signer interface performs all
-cryptographic operations — the app never touches private keys.
+## PIP-02: Swap State Machine
 
-### Pontmore Message Schema
+Swaps are modeled as Nostr-native state machines with an append-only event log.
 
-Every decrypted message content is a JSON object:
+### Event Types
+
+| Kind | Type | Mutability | Purpose |
+|------|------|------------|---------|
+| 7300 | Swap Request | Immutable | Root event defining the requested trade |
+| 7301 | Transition | Immutable | Append-only state advancement |
+| 7302 | Evidence | Immutable | Payment proof, payout proof, etc. |
+| 7303 | Dispute | Immutable | Dispute event (PIP-03) |
+| 7304 | Note | Immutable | Optional human-readable operational note |
+| 30362 | Snapshot | Addressable | Replaceable materialized view for fast lookup |
+
+### Swap States
+
+`requested` → `escrow_init` → `escrow_funded` → `fiat_pending` → `fiat_confirmed` → `payout_pending` → `payout_sent` → `completed`
+
+Branches: `cancelled`, `disputed`, `expired`
+
+### Swap Request Content (kind 7300)
 
 ```json
 {
-  "pontmore": 1,
-  "type": "deposit_request",
-  "txId": "pm_abc123",
-  "amountSats": 50000,
-  "fiatAmount": 7500,
-  "fiatCurrency": "KES",
-  "bolt11": "lnbc500n1p...",
-  "lnurl": "user@wallet.com",
-  "status": "pending",
-  "memo": "Deposit via agent booth Nairobi-001",
-  "preimage": "abcdef...",
-  "createdAt": 1719123456
+  "version": 1,
+  "swap_id": "pm_abc123",
+  "swap_type": "deposit",
+  "agent": "<agent_pubkey>",
+  "customer": "<customer_pubkey>",
+  "escrow_reference": "30361:<pubkey>:default",
+  "fiat": { "currency": "KES", "amount": 7500 },
+  "bitcoin": { "amount_sats": 50000, "network": "lightning" },
+  "expiry": 1719127056
 }
 ```
 
-### Message Types (`type` field)
+### Companion Private Message Lane
 
-| Type                  | Direction     | Description                                              |
-|-----------------------|---------------|----------------------------------------------------------|
-| `deposit_request`     | user → agent  | User requests to deposit fiat and receive BTC            |
-| `deposit_confirm`     | agent → user  | Agent confirms deposit; includes BOLT11 invoice to pay   |
-| `withdraw_request`    | user → agent  | User requests to withdraw BTC for fiat payout            |
-| `withdraw_confirm`    | agent → user  | Agent confirms withdrawal; fiat disbursed, LN paid       |
-| `transfer_request`    | user → peer   | P2P Lightning transfer request                           |
-| `transfer_confirm`    | peer → user   | Peer confirms receipt of transfer                        |
-| `status_update`       | either        | General status update (pending, confirmed, failed)       |
+Per PIP-02, sensitive payloads (invoices, bank details, payout instructions)
+are exchanged via NIP-17 Gift Wrap, NOT in public swap events. The private
+lane is a companion channel — it does not replace the public state machine.
 
-### Transaction Statuses (`status` field)
+## PIP-03: Dispute Policy
 
-`pending` → `invoice_sent` → `payment_received` → `confirmed`
-or → `failed` / `expired`
+Disputes are modeled as kind 7303 events within the swap lifecycle.
 
----
+### Dispute Classes
 
-## NIP-57 Zaps (Reused)
+- payment not received
+- payment amount mismatch
+- payout not sent
+- escrow funding failure
+- timeout and abandonment
 
-Agent-to-agent and tip-style micro-transactions reuse standard NIP-57
-zap receipts (kind 9735). No custom kind is needed for zaps.
+### Resolution Modes
+
+- confirm customer claim
+- confirm agent claim
+- split outcome
+- cancel and refund
+- escalate to manual review
+
+### Evidence Disclosure
+
+Evidence defaults to reference-style publication (hashes, opaque pointers).
+Raw payloads stay in the private message lane unless dispute policy requires
+targeted disclosure.
+
+## Lightning Wallet Integration
+
+PontPay uses Nostr Wallet Connect (NIP-47) via `@getalby/sdk` for:
+- Wallet balance queries
+- BOLT11 invoice creation
+- Lightning payment execution
+
+WebLN browser extension detection and manual QR fallback are also supported.
 
 ## Security Considerations
 
-- Transaction details are **encrypted** via NIP-44 gift wraps — relays
-  cannot read payment metadata.
-- Agent registration events (kind 33939) are **public** and signed by
-  the agent's pubkey, providing proof of authorship.
+- Agent definitions (kind 30360) and escrow descriptors (kind 30361) are
+  **public** and signed by the agent's Nostr identity
+- Swap state machine events (kinds 7300-7304) are **public** and immutable
+- Sensitive payloads are exchanged via **NIP-17 Gift Wrap** (encrypted)
+- Lightning payments settle with instant finality — Nostr is the messaging
+  layer, not the settlement layer
 - Users should verify agent identity via Nostr social proof (NIP-05,
-  follower graph) before transacting.
-- Lightning payments settle with instant finality on the Lightning
-  Network — Nostr is the messaging layer, not the settlement layer.
+  follower graph) before transacting

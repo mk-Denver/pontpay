@@ -1,10 +1,17 @@
 /**
  * useAgentRegistration — publish, update, delete, and fetch the current
- * user's own Pontmore agent registration (kind 33939 addressable event).
+ * user's own Pontmore agent definition (kind 30360, PIP-00).
  *
- * Because kind 33939 is addressable, re-publishing with the same `d` tag
- * replaces the previous event on relays. Deletion uses NIP-09 (kind 5)
- * with an `a` tag referencing the addressable coordinate.
+ * Per PIP-00, an agent definition is an addressable event with:
+ * - `d` tag (usually "agent")
+ * - `t` tag = "agent" for discovery
+ * - `relay` tags for relay preferences
+ * - `a` tag referencing the default escrow descriptor (kind 30361)
+ * - `f` tags for supported fiat currencies
+ * - JSON content with version, name, about, capabilities, pricing_policy, escrow, updated_at
+ *
+ * This hook also publishes a companion escrow descriptor (kind 30361, PIP-01)
+ * when the agent registers, since PIP-00 requires at least one usable escrow.
  */
 
 import { useNostr } from '@nostrify/react';
@@ -12,80 +19,80 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
+import { useAppContext } from '@/hooks/useAppContext';
 import { useToast } from '@/hooks/useToast';
+import { useEscrowDescriptor, type EscrowDescriptorInput } from '@/hooks/useEscrowDescriptor';
 import {
   PONTMORE_AGENT_KIND,
   PONTMORE_AGENT_TAG,
+  PONTMORE_ESCROW_KIND,
   parsePontmoreAgent,
   type PontmoreAgent,
+  type AgentCapabilities,
 } from '@/lib/pontmore';
 
-/** Input parameters for publishing an agent registration. */
+/** Input parameters for publishing an agent definition (PIP-00). */
 export interface AgentRegistrationInput {
-  /** Unique slug identifier for the agent (the d-tag). */
+  /** Stable identifier (d-tag), usually "agent". */
   identifier: string;
-  /** Display name of the agent / agent booth. */
+  /** Display name. */
   name: string;
-  /** Free-form bio / description. */
-  bio: string;
-  /** Human-readable location (e.g. "Nairobi, Kenya"). */
-  geo: string;
-  /** Fiat currencies the agent supports. */
-  currencies: string[];
-  /** Commission / spread as a percentage string (e.g. "1.5"). */
-  rate: string;
-  /** Operating hours (e.g. "Mon-Sun 08:00-20:00"). */
-  hours: string;
-  /** Contact phone number. */
-  phone: string;
-  /** Lightning address for direct Lightning payments. */
-  lud16: string;
-  /** Minimum transaction amount in sats. */
-  minAmount: number;
-  /** Maximum transaction amount in sats. */
-  maxAmount: number;
-  /** Current Lightning liquidity in sats (self-reported). */
-  liquiditySats: number;
-  /** Service categories (e.g. "deposit", "withdrawal", "exchange"). */
-  categories: string[];
+  /** About / bio. */
+  about: string;
+  /** Capabilities surface (PIP-00). */
+  capabilities: AgentCapabilities;
+  /** Pricing or margin policy reference. */
+  pricingPolicy: string;
+  /** Escrow configuration (PIP-01). */
+  escrow: EscrowDescriptorInput;
+  /** Supported fiat currencies (emitted as `f` tags). */
+  fiatCurrencies: string[];
+  /** Relay URLs the agent is reachable on (emitted as `relay` tags). */
+  relays: string[];
 }
 
-/** The default d-tag identifier prefix for Pontmore agents. */
-const DEFAULT_D_PREFIX = 'pontmore-agent';
-
-/** Build the kind 33939 event content JSON from registration input. */
-function buildContent(input: AgentRegistrationInput): string {
+/** Build the JSON content for a kind 30360 event (PIP-00). */
+function buildAgentContent(input: AgentRegistrationInput): string {
   return JSON.stringify({
-    bio: input.bio,
-    currencies: input.currencies,
-    minAmount: input.minAmount,
-    maxAmount: input.maxAmount,
-    liquiditySats: input.liquiditySats,
-    verificationLevel: 'registered',
+    version: 1,
+    name: input.name,
+    about: input.about,
+    capabilities: {
+      swap_types: input.capabilities.swapTypes,
+      fiat_currencies: input.capabilities.fiatCurrencies,
+      payment_channels: input.capabilities.paymentChannels,
+      settlement_networks: input.capabilities.settlementNetworks,
+      regions: input.capabilities.regions,
+      min_amount: input.capabilities.minAmount,
+      max_amount: input.capabilities.maxAmount,
+      pricing_margin: input.capabilities.pricingMargin,
+    },
+    pricing_policy: input.pricingPolicy,
+    escrow: input.escrow.escrowType,
+    updated_at: Math.floor(Date.now() / 1000),
   });
 }
 
-/** Build the tag array for a kind 33939 event from registration input. */
-function buildTags(input: AgentRegistrationInput): string[][] {
+/** Build the tag array for a kind 30360 event (PIP-00). */
+function buildAgentTags(input: AgentRegistrationInput, pubkey: string): string[][] {
   const tags: string[][] = [
-    ['d', input.identifier || DEFAULT_D_PREFIX],
-    ['name', input.name],
+    ['d', input.identifier || 'agent'],
     ['t', PONTMORE_AGENT_TAG],
-    ['alt', `Pontmore agent: ${input.name}${input.geo ? ` — ${input.geo}` : ''}`],
+    ['alt', `Pontmore agent: ${input.name}`],
   ];
 
-  if (input.geo) tags.push(['geo', input.geo]);
-  if (input.rate) tags.push(['rate', input.rate]);
-  if (input.hours) tags.push(['hours', input.hours]);
-  if (input.phone) tags.push(['phone', input.phone]);
-  if (input.lud16) tags.push(['lud16', input.lud16]);
-
-  for (const currency of input.currencies) {
-    tags.push(['currency', currency]);
+  // Relay tags (PIP-00 required)
+  for (const relay of input.relays) {
+    tags.push(['relay', relay]);
   }
 
-  for (const category of input.categories) {
-    tags.push(['t', category]);
+  // Escrow descriptor reference (a-tag: kind:pubkey:d)
+  const escrowCoord = `${PONTMORE_ESCROW_KIND}:${pubkey}:${input.escrow.identifier || 'default'}`;
+  tags.push(['a', escrowCoord]);
+
+  // Fiat currency tags (PIP-00 recommended)
+  for (const currency of input.fiatCurrencies) {
+    tags.push(['f', currency]);
   }
 
   return tags;
@@ -94,13 +101,15 @@ function buildTags(input: AgentRegistrationInput): string[][] {
 export function useAgentRegistration() {
   const { nostr } = useNostr();
   const { user } = useCurrentUser();
+  const { config } = useAppContext();
   const { mutateAsync: publishEvent } = useNostrPublish();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { publishEscrow } = useEscrowDescriptor();
 
   const myPubkey = user?.pubkey;
 
-  /** Fetch the current user's own agent registration (if any). */
+  /** Fetch the current user's own agent definition (if any). */
   const { data: myAgent, ...myAgentQuery } = useQuery<PontmoreAgent | null, Error>({
     queryKey: ['pontmore', 'my-agent', myPubkey ?? ''],
     queryFn: async (c) => {
@@ -117,17 +126,25 @@ export function useAgentRegistration() {
         { signal: c.signal },
       );
       if (events.length === 0) return null;
-      return parsePontmoreAgent(events[0]);
+      const agent = parsePontmoreAgent(events[0]);
+      if (agent) agent.isOwn = true;
+      return agent;
     },
     enabled: !!myPubkey,
     staleTime: 30_000,
   });
 
-  /** Publish (create or update) an agent registration. */
+  /** Publish (create or update) agent definition + escrow descriptor. */
   const publishRegistration = useMutation({
     mutationFn: async (input: AgentRegistrationInput) => {
-      const content = buildContent(input);
-      const tags = buildTags(input);
+      if (!myPubkey) throw new Error('Not logged in');
+
+      // 1. Publish the escrow descriptor first (PIP-01)
+      await publishEscrow.mutateAsync(input.escrow);
+
+      // 2. Publish the agent definition (PIP-00)
+      const content = buildAgentContent(input);
+      const tags = buildAgentTags(input, myPubkey);
 
       const event = await publishEvent({
         kind: PONTMORE_AGENT_KIND,
@@ -140,7 +157,7 @@ export function useAgentRegistration() {
     onSuccess: () => {
       toast({
         title: 'Agent listing published',
-        description: 'Your agent registration is now discoverable on the Pontmore network.',
+        description: 'Your agent definition is now discoverable on the Pontmore network.',
       });
       queryClient.invalidateQueries({ queryKey: ['pontmore'] });
     },
@@ -154,11 +171,11 @@ export function useAgentRegistration() {
     },
   });
 
-  /** Delete (unpublish) the current user's agent registration via NIP-09. */
+  /** Delete the agent definition via NIP-09. */
   const deleteRegistration = useMutation({
     mutationFn: async (identifier: string) => {
       if (!myPubkey) throw new Error('Not logged in');
-      const d = identifier || DEFAULT_D_PREFIX;
+      const d = identifier || 'agent';
       const coordinate = `${PONTMORE_AGENT_KIND}:${myPubkey}:${d}`;
 
       const event = await publishEvent({
@@ -175,7 +192,7 @@ export function useAgentRegistration() {
     onSuccess: () => {
       toast({
         title: 'Agent listing removed',
-        description: 'Your agent registration has been deleted from the network.',
+        description: 'Your agent definition has been deleted from the network.',
       });
       queryClient.invalidateQueries({ queryKey: ['pontmore'] });
     },
@@ -191,23 +208,39 @@ export function useAgentRegistration() {
 
   /** Convert a PontmoreAgent back into form input for editing. */
   const agentToInput = useCallback(
-    (agent: PontmoreAgent): AgentRegistrationInput => ({
-      identifier: agent.d,
-      name: agent.name,
-      bio: agent.bio,
-      geo: agent.geo,
-      currencies: agent.currencies,
-      rate: agent.rate,
-      hours: agent.hours,
-      phone: agent.phone,
-      lud16: agent.lud16,
-      minAmount: agent.minAmount,
-      maxAmount: agent.maxAmount,
-      liquiditySats: agent.liquiditySats,
-      categories: agent.categories,
-    }),
+    (agent: PontmoreAgent): AgentRegistrationInput => {
+      // Parse the escrow reference to get the d-identifier
+      const escrowParts = agent.escrowRef.split(':');
+      const escrowD = escrowParts[2] ?? 'default';
+
+      return {
+        identifier: agent.d,
+        name: agent.name,
+        about: agent.about,
+        capabilities: agent.capabilities,
+        pricingPolicy: agent.pricingPolicy,
+        fiatCurrencies: agent.fiatCurrencies,
+        relays: agent.relays,
+        escrow: {
+          identifier: escrowD,
+          escrowType: agent.escrowSummary || 'lightning_hold_invoice',
+          networks: ['bitcoin', 'lightning'],
+          fundingRules: { required_confirmation: 'invoice_held' },
+          releaseRules: { release_trigger: 'counterparty_fiat_payment_confirmed' },
+          disputeRules: { policy: 'operator_resolved' },
+          referenceFormat: 'bolt11',
+          invoiceNetwork: 'lightning',
+          payoutNetwork: 'lightning',
+        },
+      };
+    },
     [],
   );
+
+  /** Default relays from app config for new registrations. */
+  const defaultRelays = config.relayMetadata.relays
+    .filter((r) => r.write)
+    .map((r) => r.url);
 
   return {
     myAgent,
@@ -216,5 +249,6 @@ export function useAgentRegistration() {
     publishRegistration,
     deleteRegistration,
     agentToInput,
+    defaultRelays,
   };
 }

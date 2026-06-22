@@ -1,13 +1,13 @@
 /**
  * useAgents — fetch and filter the Pontmore agent directory.
- * Agents register themselves via kind 33939 addressable events
- * (see NIP.md). This hook queries relays for all agent registrations
- * and provides client-side filtering by location, currency, and search.
+ * Agents register themselves via kind 30360 addressable events (PIP-00).
+ * This hook queries relays for all agent definitions and provides
+ * client-side filtering by fiat currency, location/region, and search.
  */
 
 import { useNostr } from '@nostrify/react';
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
   PONTMORE_AGENT_KIND,
   PONTMORE_AGENT_TAG,
@@ -18,7 +18,7 @@ import {
 export interface UseAgentsFilters {
   search?: string;
   currency?: string;
-  location?: string;
+  region?: string;
 }
 
 export function useAgents(filters?: UseAgentsFilters) {
@@ -55,19 +55,23 @@ export function useAgents(filters?: UseAgentsFilters) {
         const q = filters.search.toLowerCase();
         const matches =
           agent.name.toLowerCase().includes(q) ||
-          agent.bio.toLowerCase().includes(q) ||
-          agent.geo.toLowerCase().includes(q);
+          agent.about.toLowerCase().includes(q) ||
+          agent.capabilities.regions.some((r) => r.toLowerCase().includes(q));
         if (!matches) return false;
       }
 
       if (filters.currency) {
-        if (!agent.currencies.includes(filters.currency)) return false;
+        const hasCurrency =
+          agent.fiatCurrencies.includes(filters.currency) ||
+          agent.capabilities.fiatCurrencies.includes(filters.currency);
+        if (!hasCurrency) return false;
       }
 
-      if (filters.location) {
-        if (!agent.geo.toLowerCase().includes(filters.location.toLowerCase())) {
-          return false;
-        }
+      if (filters.region) {
+        const hasRegion = agent.capabilities.regions.some(
+          (r) => r.toLowerCase().includes(filters.region!.toLowerCase()),
+        );
+        if (!hasRegion) return false;
       }
 
       return true;

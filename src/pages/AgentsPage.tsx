@@ -4,10 +4,6 @@ import { useState, useMemo } from 'react';
 import {
   Store,
   Search,
-  MapPin,
-  Phone,
-  Clock,
-  Coins,
   BadgeCheck,
   Zap,
   ArrowRight,
@@ -19,6 +15,8 @@ import {
   Pencil,
   Store as StoreIcon,
   X,
+  MapPin,
+  Coins,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Input } from '@/components/ui/input';
@@ -62,19 +60,19 @@ export default function AgentsPage() {
   // Directory stats
   const stats = useMemo(() => {
     const allCurrencies = new Set<string>();
-    const allLocations = new Set<string>();
+    const allRegions = new Set<string>();
     let totalLiquidity = 0;
 
     for (const agent of allAgents) {
-      for (const c of agent.currencies) allCurrencies.add(c);
-      if (agent.geo) allLocations.add(agent.geo);
-      totalLiquidity += agent.liquiditySats;
+      for (const c of agent.fiatCurrencies) allCurrencies.add(c);
+      for (const r of agent.capabilities.regions) allRegions.add(r);
+      totalLiquidity += agent.capabilities.maxAmount;
     }
 
     return {
       totalAgents: allAgents.length,
       totalCurrencies: allCurrencies.size,
-      totalLocations: allLocations.size,
+      totalRegions: allRegions.size,
       totalLiquidity,
     };
   }, [allAgents]);
@@ -95,8 +93,8 @@ export default function AgentsPage() {
                 Agent Discovery
               </h1>
               <p className="mt-2 text-muted-foreground">
-                Decentralized agents that convert between Bitcoin and local fiat
-                currencies. Verified on Nostr, available worldwide.
+                Pontmore agents (PIP-00) that publish capabilities and conduct
+                swaps. Discoverable on Nostr, available worldwide.
               </p>
             </div>
             {user && (
@@ -121,11 +119,10 @@ export default function AgentsPage() {
                 <StoreIcon className="h-5 w-5 text-green-600" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-green-600">Your agent listing is live</p>
+                <p className="text-sm font-medium text-green-600">Your agent definition is live</p>
                 <p className="truncate text-sm text-muted-foreground">
                   <strong>{myAgent.name}</strong>
-                  {myAgent.geo ? ` · ${myAgent.geo}` : ''}
-                  {myAgent.currencies.length > 0 ? ` · ${myAgent.currencies.join(', ')}` : ''}
+                  {myAgent.fiatCurrencies.length > 0 ? ` · ${myAgent.fiatCurrencies.join(', ')}` : ''}
                 </p>
               </div>
               <Button asChild size="sm" variant="outline">
@@ -139,52 +136,27 @@ export default function AgentsPage() {
 
         {/* Stats */}
         <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            icon={Users}
-            label="Registered agents"
-            value={isLoading ? '…' : stats.totalAgents.toString()}
-            color="orange"
-          />
-          <StatCard
-            icon={Coins}
-            label="Currencies supported"
-            value={isLoading ? '…' : stats.totalCurrencies.toString()}
-            color="blue"
-          />
-          <StatCard
-            icon={Globe}
-            label="Locations"
-            value={isLoading ? '…' : stats.totalLocations.toString()}
-            color="green"
-          />
-          <StatCard
-            icon={TrendingUp}
-            label="Network liquidity"
-            value={isLoading ? '…' : formatSats(stats.totalLiquidity)}
-            color="amber"
-          />
+          <StatCard icon={Users} label="Registered agents" value={isLoading ? '…' : stats.totalAgents.toString()} color="orange" />
+          <StatCard icon={Coins} label="Currencies" value={isLoading ? '…' : stats.totalCurrencies.toString()} color="blue" />
+          <StatCard icon={Globe} label="Regions served" value={isLoading ? '…' : stats.totalRegions.toString()} color="green" />
+          <StatCard icon={TrendingUp} label="Max capacity" value={isLoading ? '…' : formatSats(stats.totalLiquidity)} color="amber" />
         </div>
 
         {/* Filters */}
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end">
           <div className="flex-1">
-            <Label htmlFor="search" className="sr-only">
-              Search agents
-            </Label>
+            <Label htmlFor="search" className="sr-only">Search agents</Label>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id="search"
-                placeholder="Search by name or location..."
+                placeholder="Search by name or region..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-10"
               />
               {search && (
-                <button
-                  onClick={() => setSearch('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
+                <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                   <X className="h-4 w-4" />
                 </button>
               )}
@@ -192,16 +164,10 @@ export default function AgentsPage() {
           </div>
           <div className="w-full sm:w-48">
             <Select value={currency} onValueChange={setCurrency}>
-              <SelectTrigger>
-                <SelectValue placeholder="All currencies" />
-              </SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="All currencies" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All currencies</SelectItem>
-                {CURRENCIES.map((c) => (
-                  <SelectItem key={c} value={c}>
-                    {c}
-                  </SelectItem>
-                ))}
+                {CURRENCIES.map((c) => (<SelectItem key={c} value={c}>{c}</SelectItem>))}
               </SelectContent>
             </Select>
           </div>
@@ -241,14 +207,12 @@ export default function AgentsPage() {
               </p>
               <p className="mt-2 max-w-sm mx-auto text-sm text-muted-foreground">
                 {allAgents.length === 0
-                  ? 'Be the first agent on the Pontmore network. Register your listing and start earning commission.'
+                  ? 'Be the first agent on the Pontmore network. Register your agent definition (PIP-00) and start earning commission.'
                   : 'No agents match your filters. Try a different search or currency.'}
               </p>
               {user && allAgents.length === 0 && (
                 <Button asChild className="mt-4">
-                  <Link to="/register-agent">
-                    <Plus className="h-4 w-4" /> Register as agent
-                  </Link>
+                  <Link to="/register-agent"><Plus className="h-4 w-4" /> Register as agent</Link>
                 </Button>
               )}
             </CardContent>
@@ -260,10 +224,7 @@ export default function AgentsPage() {
             </p>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {agents.map((agent) => (
-                <Card
-                  key={agent.event.id}
-                  className="flex flex-col transition-all hover:shadow-md hover:-translate-y-0.5"
-                >
+                <Card key={agent.event.id} className="flex flex-col transition-all hover:shadow-md hover:-translate-y-0.5">
                   <CardHeader className="pb-3">
                     <div className="flex items-start gap-3">
                       <Avatar className="h-12 w-12 border">
@@ -274,68 +235,59 @@ export default function AgentsPage() {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <h3 className="truncate font-semibold">{agent.name}</h3>
-                          {agent.verificationLevel === 'verified' && (
-                            <BadgeCheck className="h-4 w-4 shrink-0 text-blue-500" />
-                          )}
                           {myAgent?.event.pubkey === agent.event.pubkey && (
-                            <Badge className="shrink-0 bg-green-500/10 text-green-600 border-green-500/20 text-xs">
-                              You
-                            </Badge>
+                            <Badge className="shrink-0 bg-green-500/10 text-green-600 border-green-500/20 text-xs">You</Badge>
                           )}
                         </div>
-                        {agent.geo && (
-                          <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                            <MapPin className="h-3 w-3" />
-                            {agent.geo}
-                          </p>
+                        {agent.about && (
+                          <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{agent.about}</p>
                         )}
                       </div>
                     </div>
                   </CardHeader>
                   <CardContent className="flex flex-1 flex-col">
-                    {agent.bio && (
-                      <p className="mb-3 line-clamp-2 text-sm text-muted-foreground">
-                        {agent.bio}
-                      </p>
-                    )}
-
-                    <div className="space-y-1.5 text-xs">
-                      {agent.currencies.length > 0 && (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <Coins className="h-3.5 w-3.5" />
-                          <span>{agent.currencies.join(', ')}</span>
-                        </div>
-                      )}
-                      {agent.rate && agent.rate !== '0' && (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <Zap className="h-3.5 w-3.5" />
-                          <span>{agent.rate}% commission</span>
-                        </div>
-                      )}
-                      {agent.hours && (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <Clock className="h-3.5 w-3.5" />
-                          <span>{agent.hours}</span>
-                        </div>
-                      )}
-                      {agent.phone && (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <Phone className="h-3.5 w-3.5" />
-                          <span>{agent.phone}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {agent.liquiditySats > 0 && (
-                      <div className="mt-3 flex items-center gap-1.5 text-xs">
-                        <ShieldCheck className="h-3.5 w-3.5 text-green-500" />
-                        <span className="text-muted-foreground">
-                          Liquidity: {formatSats(agent.liquiditySats)}
-                        </span>
+                    {/* Swap types */}
+                    {agent.capabilities.swapTypes.length > 0 && (
+                      <div className="mb-2 flex flex-wrap gap-1">
+                        {agent.capabilities.swapTypes.map((t) => (
+                          <Badge key={t} variant="secondary" className="text-xs capitalize">{t}</Badge>
+                        ))}
                       </div>
                     )}
 
-                    <div className="mt-4 pt-3 border-t">
+                    {/* Regions */}
+                    {agent.capabilities.regions.length > 0 && (
+                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <MapPin className="h-3 w-3" />
+                        <span>{agent.capabilities.regions.join(', ')}</span>
+                      </div>
+                    )}
+
+                    {/* Currencies */}
+                    {agent.fiatCurrencies.length > 0 && (
+                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Coins className="h-3 w-3" />
+                        <span>{agent.fiatCurrencies.join(', ')}</span>
+                      </div>
+                    )}
+
+                    {/* Limits */}
+                    {agent.capabilities.minAmount > 0 && agent.capabilities.maxAmount > 0 && (
+                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Zap className="h-3 w-3" />
+                        <span>{formatSats(agent.capabilities.minAmount)} – {formatSats(agent.capabilities.maxAmount)}</span>
+                      </div>
+                    )}
+
+                    {/* Escrow */}
+                    {agent.escrowSummary && (
+                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <ShieldCheck className="h-3 w-3 text-green-500" />
+                        <span className="capitalize">{agent.escrowSummary.replace(/_/g, ' ')}</span>
+                      </div>
+                    )}
+
+                    <div className="mt-auto pt-3 border-t">
                       <Button asChild size="sm" className="w-full">
                         <Link to={`/dashboard?agent=${agent.event.pubkey}`}>
                           Transact with agent
@@ -360,14 +312,12 @@ export default function AgentsPage() {
               <div className="flex-1">
                 <p className="font-semibold">Want to earn commission?</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Register as a Pontmore agent. Convert between Bitcoin and
-                  local fiat for users in your area.
+                  Register as a Pontmore agent (PIP-00). Publish capabilities and
+                  conduct swaps for users in your region.
                 </p>
               </div>
               <Button asChild className="shrink-0">
-                <Link to="/register-agent">
-                  <Plus className="h-4 w-4" /> Register now
-                </Link>
+                <Link to="/register-agent"><Plus className="h-4 w-4" /> Register now</Link>
               </Button>
             </CardContent>
           </Card>
