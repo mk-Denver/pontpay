@@ -29,6 +29,7 @@ import {
   generateSwapId,
   buildSwapFromEvents,
   parseSwapSnapshot,
+  parseSwapRequest,
   type SwapType,
   type SwapState,
   type SwapRequestContent,
@@ -375,7 +376,9 @@ export function useSwapStateMachine() {
 
   /**
    * Fetch all swaps involving the current user (as customer or agent).
-   * Uses snapshots (kind 30362) for fast lookup, falls back to local ledger.
+   * Queries snapshots (kind 30362) for fast lookup, also queries incoming
+   * swap requests (kind 7300 where #p = me) for swaps where the user is the
+   * agent, and falls back to the local ledger.
    */
   const useMySwaps = () =>
     useQuery<PontmoreSwap[], Error>({
@@ -383,20 +386,34 @@ export function useSwapStateMachine() {
       queryFn: async (c) => {
         if (!myPubkey) return [];
 
-        // Query snapshots where the user is the author (customer) or tagged (agent)
-        const events = await nostr.query(
-          [
-            // Snapshots published by the user (as customer)
-            { kinds: [PONTMORE_SWAP_SNAPSHOT_KIND], authors: [myPubkey], limit: 50 },
-          ],
-          { signal: c.signal },
-        );
+        // Query snapshots published by the user (as customer) AND swap
+        // requests where the user is the tagged agent (as agent).
+        const [snapshotEvents, incomingRequests] = await Promise.all([
+          nostr.query(
+            [
+              // Snapshots published by the user (as customer)
+              { kinds: [PONTMORE_SWAP_SNAPSHOT_KIND], authors: [myPubkey], limit: 50 },
+            ],
+            { signal: c.signal },
+          ),
+          nostr.query(
+            [
+              // Swap requests where I'm the tagged agent (incoming)
+              { kinds: [PONTMORE_SWAP_REQUEST_KIND], '#p': [myPubkey], limit: 50 },
+            ],
+            { signal: c.signal },
+          ),
+        ]);
 
         const swaps: PontmoreSwap[] = [];
+        const seenSwapIds = new Set<string>();
 
-        for (const event of events) {
+        // Process snapshots (outgoing — I'm the customer)
+        for (const event of snapshotEvents) {
           const snapshot = parseSwapSnapshot(event);
           if (!snapshot) continue;
+          if (seenSwapIds.has(snapshot.swap_id)) continue;
+          seenSwapIds.add(snapshot.swap_id);
 
           swaps.push({
             swapId: snapshot.swap_id,
@@ -417,9 +434,38 @@ export function useSwapStateMachine() {
           });
         }
 
+        // Process incoming requests (I'm the agent)
+        for (const reqEvent of incomingRequests) {
+          const swapId = reqEvent.tags.find(([n]) => n === 'd')?.[1];
+          if (!swapId || seenSwapIds.has(swapId)) continue;
+          seenSwapIds.add(swapId);
+
+          const request = parseSwapRequest(reqEvent);
+          if (!request) continue;
+
+          swaps.push({
+            swapId: request.swap_id,
+            swapType: request.swap_type,
+            state: 'requested',
+            agentPubkey: request.agent,
+            customerPubkey: request.customer,
+            bitcoinAmountSats: request.bitcoin.amount_sats,
+            fiatAmount: request.fiat.amount,
+            fiatCurrency: request.fiat.currency,
+            escrowReference: request.escrow_reference,
+            expiry: request.expiry,
+            createdAt: reqEvent.created_at,
+            updatedAt: reqEvent.created_at,
+            direction: 'incoming',
+            transitions: [],
+            evidence: [],
+          });
+        }
+
         // Merge with local ledger for swaps that may not have snapshots yet
         for (const local of localSwaps) {
-          if (!swaps.find((s) => s.swapId === local.swapId)) {
+          if (!seenSwapIds.has(local.swapId)) {
+            seenSwapIds.add(local.swapId);
             swaps.push({
               swapId: local.swapId,
               swapType: local.swapType,

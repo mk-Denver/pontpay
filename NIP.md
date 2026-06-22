@@ -96,6 +96,62 @@ Per PIP-02, sensitive payloads (invoices, bank details, payout instructions)
 are exchanged via NIP-17 Gift Wrap, NOT in public swap events. The private
 lane is a companion channel — it does not replace the public state machine.
 
+#### Implementation
+
+The private lane is implemented in `src/lib/giftwrap.ts` (NIP-59 gift wrap
+create/unwrap) and `src/hooks/useSwapMessages.ts` (send/receive swap payloads).
+
+**Sending** (`useSwapMessages().sendMessage`):
+1. Create a kind 14 rumor (unsigned) with a JSON `SwapPayload`:
+   `{ type, swapId, data, label?, createdAt }`
+2. Seal it (kind 13) — encrypt the rumor to the recipient using the sender's
+   signer NIP-44, sign with the sender's real key
+3. Gift wrap it (kind 1059) — encrypt the seal with a random one-time key
+   (nostr-tools `generateSecretKey` + `nip44.v2`)
+4. Publish two wraps: one to the recipient, one to self (archive)
+
+**Receiving** (`useSwapMessages().useSwapInbox`):
+1. Query `kinds: [1059], '#p': [myPubkey]` (gift wraps addressed to us)
+2. Unwrap each: decrypt outer layer (signer NIP-44, peer = wrapper pubkey)
+   → seal, decrypt inner layer (signer NIP-44, peer = seal pubkey) → rumor
+3. Verify rumor.pubkey === seal.pubkey (NIP-17 anti-impersonation check)
+4. Filter by `swap` tag to match a specific swap
+5. Parse the JSON payload from the rumor content
+
+**Payload types** (`SwapPayloadType`):
+- `invoice` — Lightning invoice (BOLT11)
+- `bank_details` — Fiat payment/payout instructions
+- `payout_confirmation` — Agent confirms fiat payout sent
+- `payment_proof` — Proof of payment (preimage, receipt, tx hash)
+- `message` — Freeform operational note
+
+The `swap` tag on the rumor links it to the public kind 7300 swap request.
+
+### Agent Inbox
+
+Agents discover incoming swap requests by querying kind 7300 events where
+they are the `p`-tagged recipient:
+
+```ts
+nostr.query([{ kinds: [7300], '#p': [myPubkey], limit: 50 }]);
+```
+
+The agent inbox (`src/pages/AgentInboxPage.tsx`) provides:
+- Browse incoming swap requests with customer info and state
+- Accept/reject requests (advance state machine via kind 7301)
+- Advance the full swap lifecycle: `requested → escrow_init → escrow_funded
+  → fiat_confirmed → payout_pending → payout_sent → completed`
+- Publish evidence (kind 7302)
+- View and send encrypted private messages (NIP-17 gift wrap)
+
+The customer side (`src/pages/Dashboard.tsx`) now:
+1. Generates a Lightning invoice before publishing the swap request
+2. Publishes the swap request (kind 7300) to relays
+3. Sends the invoice + payment instructions via NIP-17 gift wrap to the agent
+
+This closes the loop: the customer's swap request reaches the agent's inbox,
+and the encrypted invoice/bank details are delivered via the private lane.
+
 ## PIP-03: Dispute Policy
 
 Disputes are modeled as kind 7303 events within the swap lifecycle.

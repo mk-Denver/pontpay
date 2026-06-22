@@ -4,7 +4,7 @@
  */
 
 import { Link, useLocation } from 'react-router-dom';
-import { Zap, LayoutDashboard, Wallet, Store, History, Shield, UserPlus } from 'lucide-react';
+import { Zap, LayoutDashboard, Wallet, Store, History, Shield, UserPlus, Inbox } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { LoginArea } from '@/components/auth/LoginArea';
@@ -15,6 +15,7 @@ import { formatSats } from '@/lib/pontmore';
 
 const NAV_LINKS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/agent-inbox', label: 'Inbox', icon: Inbox },
   { to: '/agents', label: 'Agents', icon: Store },
   { to: '/register-agent', label: 'Register', icon: UserPlus },
   { to: '/wallet', label: 'Wallet', icon: Wallet },

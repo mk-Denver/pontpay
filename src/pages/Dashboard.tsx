@@ -36,6 +36,7 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { useAgents } from '@/hooks/useAgents';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
+import { useSwapMessages } from '@/hooks/useSwapMessages';
 import { formatSats, estimateFiat } from '@/lib/pontmore';
 import { QRCodeCanvas } from '@/components/ui/qrcode';
 
@@ -287,13 +288,15 @@ function SwapRow({ swap }: { swap: import('@/hooks/useSwapStateMachine').LocalSw
 
 function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const { agents, isLoading } = useAgents();
-  const { hasWallet } = useUnifiedWallet();
+  const { hasWallet, makeInvoice, isCreatingInvoice } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
+  const { sendMessage, hasNip44 } = useSwapMessages();
   const [selectedAgentPubkey, setSelectedAgentPubkey] = useState(preselectedAgent ?? '');
   const [amountSats, setAmountSats] = useState('');
   const [currency, setCurrency] = useState('KES');
   const [memo, setMemo] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const selectedAgent = agents.find((a) => a.event.pubkey === selectedAgentPubkey);
   const fiatEstimate = estimateFiat(parseInt(amountSats) || 0, BTC_PRICE_USD, currency);
@@ -302,17 +305,65 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
     const sats = parseInt(amountSats);
     if (!sats || !selectedAgentPubkey) return;
     setSubmitting(true);
-    await publishSwapRequest.mutateAsync({
-      swapType: 'deposit',
-      agentPubkey: selectedAgentPubkey,
-      amountSats: sats,
-      fiatAmount: fiatEstimate,
-      fiatCurrency: currency,
-      escrowReference: selectedAgent?.escrowRef ?? '',
-    });
-    setSubmitting(false);
-    setAmountSats('');
-    setMemo('');
+    setStatusMsg(null);
+
+    try {
+      // Step 1: Generate a Lightning invoice to receive BTC (if wallet connected)
+      let invoice: string | null = null;
+      if (hasWallet) {
+        setStatusMsg('Generating Lightning invoice…');
+        const result = await makeInvoice(sats, `Pontmore deposit ${memo}`);
+        invoice = result?.invoice ?? null;
+      }
+
+      // Step 2: Publish the swap request (kind 7300)
+      setStatusMsg('Publishing swap request…');
+      const swapId = await publishSwapRequest.mutateAsync({
+        swapType: 'deposit',
+        agentPubkey: selectedAgentPubkey,
+        amountSats: sats,
+        fiatAmount: fiatEstimate,
+        fiatCurrency: currency,
+        escrowReference: selectedAgent?.escrowRef ?? '',
+      });
+
+      // Step 3: Send the invoice + payment instructions via NIP-17 private lane
+      if (hasNip44 && swapId) {
+        setStatusMsg('Sending encrypted invoice to agent…');
+        if (invoice) {
+          await sendMessage.mutateAsync({
+            swapId,
+            recipientPubkey: selectedAgentPubkey,
+            payloadType: 'invoice',
+            data: invoice,
+            label: `Deposit ${sats} sats`,
+          });
+        }
+        if (memo) {
+          await sendMessage.mutateAsync({
+            swapId,
+            recipientPubkey: selectedAgentPubkey,
+            payloadType: 'bank_details',
+            data: memo,
+            label: 'Fiat payment instructions',
+          });
+        }
+        setStatusMsg('Swap request sent! The agent will respond in your inbox.');
+      } else {
+        setStatusMsg(
+          hasNip44
+            ? 'Swap request published. Connect a wallet and send your invoice via the private lane.'
+            : 'Swap request published. Upgrade your signer to send encrypted invoice details.',
+        );
+      }
+    } finally {
+      setSubmitting(false);
+      setTimeout(() => {
+        setStatusMsg(null);
+        setAmountSats('');
+        setMemo('');
+      }, 8000);
+    }
   };
 
   return (
@@ -325,6 +376,20 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
             <p className="text-muted-foreground">
               Connect a Lightning wallet to receive your BTC deposit.{' '}
               <Link to="/wallet" className="font-medium text-foreground underline">Connect now</Link>.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!hasNip44 && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+          <Info className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          <div className="text-sm">
+            <p className="font-medium text-amber-600">NIP-44 required for private lane</p>
+            <p className="text-muted-foreground">
+              Your signer doesn't support encryption. The swap request will be
+              published publicly, but you won't be able to send invoices or bank
+              details privately.
             </p>
           </div>
         </div>
@@ -379,22 +444,32 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
       )}
 
       <div>
-        <Label htmlFor="deposit-memo">Memo (optional)</Label>
-        <Textarea id="deposit-memo" placeholder="e.g. Cash deposit at agent booth" value={memo} onChange={(e) => setMemo(e.target.value)} rows={2} />
+        <Label htmlFor="deposit-memo">Payment instructions (optional)</Label>
+        <Textarea id="deposit-memo" placeholder="e.g. M-Pesa send to 254712345678, or cash at Westlands booth" value={memo} onChange={(e) => setMemo(e.target.value)} rows={2} />
+        <p className="mt-1 text-xs text-muted-foreground">
+          Sent encrypted to the agent via NIP-17 — not in the public swap event.
+        </p>
       </div>
 
       <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
         <Shield className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
         <p>
-          This publishes a PIP-02 swap request (kind 7300) on Nostr. The agent
-          will respond with a transition event, and a Lightning hold invoice
-          will be exchanged via the private message lane.
+          This publishes a PIP-02 swap request (kind 7300) on Nostr. Your
+          Lightning invoice and payment instructions are sent encrypted via the
+          NIP-17 private lane — only the agent can read them.
         </p>
       </div>
 
+      {statusMsg && (
+        <div className="flex items-center gap-2 rounded-lg bg-primary/10 p-3 text-sm text-primary">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {statusMsg}
+        </div>
+      )}
+
       <Button onClick={handleSubmit} disabled={submitting || !selectedAgentPubkey || !amountSats} className="w-full">
         {submitting ? (
-          <><Loader2 className="h-4 w-4 animate-spin" /> Publishing swap request…</>
+          <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
         ) : (
           <><ArrowDownToLine className="h-4 w-4" /> Request deposit</>
         )}
@@ -409,12 +484,14 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const { agents, isLoading } = useAgents();
   const { hasWallet, balance, makeInvoice, isCreatingInvoice } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
+  const { sendMessage, hasNip44 } = useSwapMessages();
   const [selectedAgentPubkey, setSelectedAgentPubkey] = useState(preselectedAgent ?? '');
   const [amountSats, setAmountSats] = useState('');
   const [currency, setCurrency] = useState('KES');
   const [memo, setMemo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [generatedInvoice, setGeneratedInvoice] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const selectedAgent = agents.find((a) => a.event.pubkey === selectedAgentPubkey);
   const sats = parseInt(amountSats) || 0;
@@ -429,18 +506,52 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const handleSubmit = async () => {
     if (!sats || !selectedAgentPubkey || !generatedInvoice) return;
     setSubmitting(true);
-    await publishSwapRequest.mutateAsync({
-      swapType: 'withdrawal',
-      agentPubkey: selectedAgentPubkey,
-      amountSats: sats,
-      fiatAmount: fiatEstimate,
-      fiatCurrency: currency,
-      escrowReference: selectedAgent?.escrowRef ?? generatedInvoice,
-    });
-    setSubmitting(false);
-    setAmountSats('');
-    setMemo('');
-    setGeneratedInvoice(null);
+    setStatusMsg(null);
+
+    try {
+      // Step 1: Publish the swap request (kind 7300)
+      setStatusMsg('Publishing swap request…');
+      const swapId = await publishSwapRequest.mutateAsync({
+        swapType: 'withdrawal',
+        agentPubkey: selectedAgentPubkey,
+        amountSats: sats,
+        fiatAmount: fiatEstimate,
+        fiatCurrency: currency,
+        escrowReference: selectedAgent?.escrowRef ?? generatedInvoice,
+      });
+
+      // Step 2: Send the invoice + payout instructions via NIP-17 private lane
+      if (hasNip44 && swapId) {
+        setStatusMsg('Sending encrypted invoice to agent…');
+        await sendMessage.mutateAsync({
+          swapId,
+          recipientPubkey: selectedAgentPubkey,
+          payloadType: 'invoice',
+          data: generatedInvoice,
+          label: `Withdrawal ${sats} sats`,
+        });
+        if (memo) {
+          await sendMessage.mutateAsync({
+            swapId,
+            recipientPubkey: selectedAgentPubkey,
+            payloadType: 'bank_details',
+            data: memo,
+            label: 'Fiat payout instructions',
+          });
+        }
+        setStatusMsg('Withdrawal request sent! The agent will pay your invoice and send fiat.');
+      } else {
+        setStatusMsg('Swap request published. Upgrade your signer to send encrypted invoice details.');
+      }
+    } finally {
+      setSubmitting(false);
+      setTimeout(() => {
+        setStatusMsg(null);
+        setAmountSats('');
+        setMemo('');
+        setGeneratedInvoice(null);
+      }, 8000);
+    }
   };
 
   return (
@@ -460,6 +571,19 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
         <div className="flex items-center justify-between rounded-lg bg-muted/50 p-3 text-sm">
           <span className="text-muted-foreground">Available balance</span>
           <strong>{formatSats(balance)}</strong>
+        </div>
+      )}
+
+      {!hasNip44 && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+          <Info className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          <div className="text-sm">
+            <p className="font-medium text-amber-600">NIP-44 required for private lane</p>
+            <p className="text-muted-foreground">
+              Your signer doesn't support encryption. The swap request will be
+              published, but you won't be able to send the invoice privately.
+            </p>
+          </div>
         </div>
       )}
 
@@ -507,8 +631,11 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
       )}
 
       <div>
-        <Label htmlFor="withdraw-memo">Memo (optional)</Label>
-        <Textarea id="withdraw-memo" placeholder="e.g. Cash pickup at agent booth" value={memo} onChange={(e) => setMemo(e.target.value)} rows={2} />
+        <Label htmlFor="withdraw-memo">Payout instructions (optional)</Label>
+        <Textarea id="withdraw-memo" placeholder="e.g. M-Pesa to 254712345678, or bank acc 1234567890" value={memo} onChange={(e) => setMemo(e.target.value)} rows={2} />
+        <p className="mt-1 text-xs text-muted-foreground">
+          Sent encrypted to the agent via NIP-17 — not in the public swap event.
+        </p>
       </div>
 
       {hasWallet && sats > 0 && !generatedInvoice && (
@@ -541,14 +668,22 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
         <Shield className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />
         <p>
           This publishes a PIP-02 swap request (kind 7300). The agent pays your
-          Lightning invoice and dispenses fiat. The invoice is exchanged via
-          the private message lane, not in the public swap event.
+          Lightning invoice and dispenses fiat. The invoice and payout details
+          are sent encrypted via the NIP-17 private lane — only the agent can
+          read them.
         </p>
       </div>
 
+      {statusMsg && (
+        <div className="flex items-center gap-2 rounded-lg bg-primary/10 p-3 text-sm text-primary">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {statusMsg}
+        </div>
+      )}
+
       <Button onClick={handleSubmit} disabled={submitting || !selectedAgentPubkey || !generatedInvoice} className="w-full">
         {submitting ? (
-          <><Loader2 className="h-4 w-4 animate-spin" /> Publishing swap request…</>
+          <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
         ) : (
           <><ArrowUpFromLine className="h-4 w-4" /> Request withdrawal</>
         )}
