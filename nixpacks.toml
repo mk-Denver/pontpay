@@ -1,0 +1,14 @@
+# Nixpacks configuration for Railway
+# https://nixpacks.com/docs/configuration/file
+
+[phases.setup]
+nixPkgs = ['nodejs_22']
+
+[phases.install]
+cmds = ['npm install --legacy-peer-deps']
+
+[phases.build]
+cmds = ['npx vite build -l error', 'cp dist/index.html dist/404.html']
+
+[start]
+cmd = 'npx serve dist -l ${PORT:-3000} -s'
