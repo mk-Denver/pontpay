@@ -86,12 +86,18 @@ export default function Index() {
             <span className="text-lg font-bold tracking-tight">PontPay</span>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              to="/agents"
+              className="hidden sm:flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Store className="h-4 w-4" /> Agents
+            </Link>
             {user && (
               <Link
-                to="/dashboard"
+                to="/register-agent"
                 className="hidden sm:flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
               >
-                Dashboard <ArrowRight className="h-4 w-4" />
+                Become an agent <ArrowRight className="h-4 w-4" />
               </Link>
             )}
             <LoginArea className="max-w-40" />

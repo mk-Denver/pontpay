@@ -52,6 +52,46 @@ Agents are discoverable at the relay level:
 nostr.query([{ kinds: [33939], '#t': ['pontmore-agent'], limit: 50 }]);
 ```
 
+To fetch a specific agent's listing (e.g. for editing):
+
+```ts
+nostr.query([{
+  kinds: [33939],
+  authors: [agentPubkey],
+  '#t': ['pontmore-agent'],
+  limit: 1,
+}]);
+```
+
+### Registration Flow
+
+1. The agent fills out a registration form (name, location, currencies,
+   commission rate, operating hours, contact info, Lightning address,
+   transaction limits, and liquidity).
+2. The client builds a kind 33939 event with the appropriate tags and a
+   JSON `content` payload containing extended metadata.
+3. The event is signed by the agent's Nostr identity and published to
+   relays. It is immediately discoverable in the agent directory.
+4. **Updating** — re-publishing with the same `d` tag replaces the
+   previous event on relays (addressable semantics).
+5. **Deletion** — a NIP-09 kind 5 event is published with an `a` tag
+   referencing the addressable coordinate
+   (`33939:<pubkey>:<d-identifier>`), signaling to relays and clients
+   that the listing should be removed.
+
+### Content Schema
+
+```json
+{
+  "bio": "Trusted Pontmore agent serving downtown Nairobi.",
+  "currencies": ["KES", "USD", "UGX"],
+  "minAmount": 1000,
+  "maxAmount": 500000,
+  "liquiditySats": 2500000,
+  "verificationLevel": "registered"
+}
+```
+
 ---
 
 ## Transaction Messages — NIP-17 Encrypted Direct Messages
