@@ -38,7 +38,7 @@ import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { useAgents } from '@/hooks/useAgents';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
 import { useSwapMessages } from '@/hooks/useSwapMessages';
-import { formatSats, estimateFiat } from '@/lib/pontmore';
+import { formatSats, estimateFiat, type PontmoreSwap } from '@/lib/pontmore';
 
 const CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
 const BTC_PRICE_USD = 65000;
@@ -57,7 +57,8 @@ export default function Dashboard() {
   }, [actionParam]);
 
   const { hasWallet, balance, balanceLoading, refreshBalance } = useUnifiedWallet();
-  const { localSwaps } = useSwapStateMachine();
+  const { localSwaps, useMySwaps } = useSwapStateMachine();
+  const { data: nostrSwaps } = useMySwaps();
 
   useSeoMeta({
     title: 'Dashboard — PontPay',
@@ -83,7 +84,11 @@ export default function Dashboard() {
     );
   }
 
-  const recentSwaps = localSwaps.slice(0, 5);
+  // Use Nostr-sourced swaps (with live transitions) if available, fall back to local
+  const liveSwaps = nostrSwaps && nostrSwaps.length > 0 ? nostrSwaps : [];
+  const recentSwaps = liveSwaps.length > 0
+    ? liveSwaps.slice(0, 5).map(swapToLocal)
+    : localSwaps.slice(0, 5);
 
   return (
     <AppLayout>
@@ -229,6 +234,24 @@ export default function Dashboard() {
       </div>
     </AppLayout>
   );
+}
+
+/** Convert a PontmoreSwap to a LocalSwapRecord for display. */
+function swapToLocal(swap: PontmoreSwap): import('@/hooks/useSwapStateMachine').LocalSwapRecord {
+  return {
+    swapId: swap.swapId,
+    swapType: swap.swapType,
+    agentPubkey: swap.agentPubkey,
+    customerPubkey: swap.customerPubkey,
+    amountSats: swap.bitcoinAmountSats,
+    fiatAmount: swap.fiatAmount,
+    fiatCurrency: swap.fiatCurrency,
+    escrowReference: swap.escrowReference,
+    state: swap.state,
+    createdAt: swap.createdAt,
+    updatedAt: swap.updatedAt,
+    direction: swap.direction,
+  };
 }
 
 function ActionButton({

@@ -30,6 +30,7 @@ import {
   buildSwapFromEvents,
   parseSwapSnapshot,
   parseSwapRequest,
+  parseSwapTransition,
   type SwapType,
   type SwapState,
   type SwapRequestContent,
@@ -347,8 +348,9 @@ export function useSwapStateMachine() {
           [
             // Swap request (root event)
             { kinds: [PONTMORE_SWAP_REQUEST_KIND], '#d': [swapId], limit: 1 },
-            // Transitions (append-only)
-            { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#e': [swapId], limit: 50 },
+            // Transitions (append-only) — query by both #d and #e for reliability
+            { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#d': [swapId], limit: 100 },
+            { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#e': [swapId], limit: 100 },
             // Evidence
             { kinds: [PONTMORE_SWAP_EVIDENCE_KIND], '#e': [swapId], limit: 50 },
           ],
@@ -359,7 +361,11 @@ export function useSwapStateMachine() {
         const requestEvent = events.find((e) => e.kind === PONTMORE_SWAP_REQUEST_KIND);
         if (!requestEvent) return null;
 
-        const transitionEvents = events.filter((e) => e.kind === PONTMORE_SWAP_TRANSITION_KIND);
+        // Deduplicate transitions by event id
+        const seenIds = new Set<string>();
+        const transitionEvents = events.filter(
+          (e) => e.kind === PONTMORE_SWAP_TRANSITION_KIND && !seenIds.has(e.id) && seenIds.add(e.id)
+        );
         const evidenceEvents = events.filter((e) => e.kind === PONTMORE_SWAP_EVIDENCE_KIND);
 
         return buildSwapFromEvents(
@@ -370,15 +376,16 @@ export function useSwapStateMachine() {
         );
       },
       enabled: !!swapId && !!myPubkey,
-      staleTime: 15_000,
-      refetchInterval: 30_000,
+      staleTime: 5_000,
+      refetchInterval: 10_000,
     });
 
   /**
    * Fetch all swaps involving the current user (as customer or agent).
-   * Queries snapshots (kind 30362) for fast lookup, also queries incoming
-   * swap requests (kind 7300 where #p = me) for swaps where the user is the
-   * agent, and falls back to the local ledger.
+   *
+   * Queries snapshots (kind 30362) + swap requests (kind 7300) for initial
+   * data, then fetches ALL transition events (kind 7301) for those swap IDs
+   * so the customer sees live state updates as the agent advances the swap.
    */
   const useMySwaps = () =>
     useQuery<PontmoreSwap[], Error>({
@@ -391,14 +398,12 @@ export function useSwapStateMachine() {
         const [snapshotEvents, incomingRequests] = await Promise.all([
           nostr.query(
             [
-              // Snapshots published by the user (as customer)
               { kinds: [PONTMORE_SWAP_SNAPSHOT_KIND], authors: [myPubkey], limit: 50 },
             ],
             { signal: c.signal },
           ),
           nostr.query(
             [
-              // Swap requests where I'm the tagged agent (incoming)
               { kinds: [PONTMORE_SWAP_REQUEST_KIND], '#p': [myPubkey], limit: 50 },
             ],
             { signal: c.signal },
@@ -486,11 +491,81 @@ export function useSwapStateMachine() {
           }
         }
 
+        // ── Fetch transitions for ALL swap IDs ──────────────────────
+        // This is the critical piece: without it, the customer's swap state
+        // is frozen at "requested" because the agent's transitions (kind 7301)
+        // are never queried. We fetch all transitions for all swap IDs in one
+        // batch, then rebuild each swap's state from the latest transition.
+        const allSwapIds = swaps.map((s) => s.swapId);
+        if (allSwapIds.length > 0) {
+          const transitionEvents = await nostr.query(
+            [
+              { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#d': allSwapIds, limit: 500 },
+              { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#e': allSwapIds, limit: 500 },
+            ],
+            { signal: c.signal },
+          );
+
+          // Deduplicate by event id
+          const seenEventIds = new Set<string>();
+          const uniqueTransitions = transitionEvents.filter((e) => {
+            if (seenEventIds.has(e.id)) return false;
+            seenEventIds.add(e.id);
+            return true;
+          });
+
+          // Parse and group transitions by swap ID
+          const transitionsBySwap = new Map<string, {
+            state: SwapState;
+            prevState: SwapState;
+            actorRole: string;
+            reason: string;
+            createdAt: number;
+            eventId: string;
+          }[]>();
+
+          for (const evt of uniqueTransitions) {
+            const parsed = parseSwapTransition(evt);
+            if (!parsed) continue;
+
+            // Match by 'd' or 'e' tag
+            const swapId = evt.tags.find(([n]) => n === 'd')?.[1]
+              ?? evt.tags.find(([n]) => n === 'e')?.[1];
+            if (!swapId) continue;
+
+            const arr = transitionsBySwap.get(swapId) ?? [];
+            arr.push({
+              state: parsed.state,
+              prevState: parsed.prev_state,
+              actorRole: parsed.actor_role,
+              reason: parsed.reason,
+              createdAt: parsed.created_at,
+              eventId: evt.id,
+            });
+            transitionsBySwap.set(swapId, arr);
+          }
+
+          // Apply transitions to each swap — update state + transitions list
+          for (const swap of swaps) {
+            const transitions = transitionsBySwap.get(swap.swapId);
+            if (!transitions || transitions.length === 0) continue;
+
+            // Sort by created_at ascending
+            transitions.sort((a, b) => a.createdAt - b.createdAt);
+
+            // Latest transition determines current state
+            const latest = transitions[transitions.length - 1];
+            swap.state = latest.state;
+            swap.updatedAt = latest.createdAt;
+            swap.transitions = transitions;
+          }
+        }
+
         return swaps.sort((a, b) => b.updatedAt - a.updatedAt);
       },
       enabled: !!myPubkey,
-      staleTime: 15_000,
-      refetchInterval: 30_000,
+      staleTime: 10_000,
+      refetchInterval: 15_000,
     });
 
   /** All swaps from local ledger (sorted by most recent). */

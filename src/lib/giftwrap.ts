@@ -115,10 +115,16 @@ export function createGiftWrap(
 ): NostrEvent {
   const randomKey = generateSecretKey(); // Uint8Array(32)
 
-  const conversationKey = nip44.v2.utils.getConversationKey(
-    randomKey,
-    recipientPubkey,
-  );
+  // nostr-tools v2: getConversationKey accepts (privateKey: Uint8Array, publicKey: string)
+  // Some builds may expect hex string — try both
+  let conversationKey: Uint8Array;
+  try {
+    conversationKey = nip44.v2.utils.getConversationKey(randomKey, recipientPubkey);
+  } catch {
+    // Fallback: convert to hex string
+    const hexKey = Array.from(randomKey).map((b) => b.toString(16).padStart(2, '0')).join('');
+    conversationKey = nip44.v2.utils.getConversationKey(hexKey as unknown as Uint8Array, recipientPubkey);
+  }
 
   const ciphertext = nip44.v2.encrypt(JSON.stringify(seal), conversationKey);
 

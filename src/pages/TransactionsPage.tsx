@@ -299,7 +299,7 @@ export default function TransactionsPage() {
               Swap details — view state, messages, and pay invoices.
             </DialogDescription>
           </DialogHeader>
-          {selectedSwap && <SwapDetailPanel swap={selectedSwap} />}
+          {selectedSwap && <LiveSwapDetailPanel swapId={selectedSwap.swapId} fallbackSwap={selectedSwap} />}
         </DialogContent>
       </Dialog>
     </AppLayout>
@@ -351,6 +351,28 @@ function SwapRow({ swap, onClick }: { swap: PontmoreSwap; onClick: () => void })
       </CardContent>
     </Card>
   );
+}
+
+// ─── Live Swap Detail Panel ──────────────────────────────────────
+// Wraps SwapDetailPanel with a live query (useSwap) so the customer sees
+// real-time state updates as the agent advances the swap.
+
+function LiveSwapDetailPanel({ swapId, fallbackSwap }: { swapId: string; fallbackSwap: PontmoreSwap }) {
+  const { useSwap } = useSwapStateMachine();
+  const { data: liveSwap, isLoading } = useSwap(swapId);
+
+  // Use live swap data if available, fall back to the snapshot from the list
+  const swap = liveSwap ?? fallbackSwap;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return <SwapDetailPanel swap={swap} />;
 }
 
 // ─── Swap Detail Panel (customer side) ───────────────────────────

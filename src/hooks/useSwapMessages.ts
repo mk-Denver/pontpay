@@ -172,37 +172,42 @@ export function useSwapMessages() {
         const messages: SwapMessage[] = [];
 
         for (const wrap of wraps) {
-          const unwrapped = await unwrapGiftWrap(signer, wrap);
-          if (!unwrapped) continue;
-
-          const { rumor, seal } = unwrapped;
-
-          // Only care about kind 14 chat messages with a swap tag
-          if (rumor.kind !== 14) continue;
-
-          const swapTag = rumor.tags.find(([n]) => n === 'swap')?.[1];
-          if (!swapTag) continue;
-
-          // Filter by swapId if provided
-          if (swapId && swapTag !== swapId) continue;
-
-          let payload: SwapPayload;
           try {
-            payload = JSON.parse(rumor.content);
+            const unwrapped = await unwrapGiftWrap(signer, wrap);
+            if (!unwrapped) continue;
+
+            const { rumor, seal } = unwrapped;
+
+            // Only care about kind 14 chat messages with a swap tag
+            if (rumor.kind !== 14) continue;
+
+            const swapTag = rumor.tags.find(([n]) => n === 'swap')?.[1];
+            if (!swapTag) continue;
+
+            // Filter by swapId if provided
+            if (swapId && swapTag !== swapId) continue;
+
+            let payload: SwapPayload;
+            try {
+              payload = JSON.parse(rumor.content);
+            } catch {
+              continue;
+            }
+
+            if (typeof payload.swapId !== 'string') continue;
+
+            messages.push({
+              id: seal.id + wrap.id,
+              swapId: payload.swapId,
+              senderPubkey: seal.pubkey,
+              payload,
+              createdAt: payload.createdAt ?? rumor.created_at,
+              giftWrapId: wrap.id,
+            });
           } catch {
+            // Decryption failed for this wrap — skip it
             continue;
           }
-
-          if (typeof payload.swapId !== 'string') continue;
-
-          messages.push({
-            id: seal.id + wrap.id,
-            swapId: payload.swapId,
-            senderPubkey: seal.pubkey,
-            payload,
-            createdAt: payload.createdAt ?? rumor.created_at,
-            giftWrapId: wrap.id,
-          });
         }
 
         // Sort newest first
