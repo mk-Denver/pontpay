@@ -18,15 +18,6 @@
 import { generateSecretKey, finalizeEvent, nip44 } from 'nostr-tools';
 import type { NostrEvent } from '@nostrify/nostrify';
 
-/** Convert a Uint8Array to a hex string (avoids extra @noble dependency). */
-function bytesToHex(bytes: Uint8Array): string {
-  let hex = '';
-  for (let i = 0; i < bytes.length; i++) {
-    hex += bytes[i]!.toString(16).padStart(2, '0');
-  }
-  return hex;
-}
-
 /** A NIP-07 / nostrify signer with NIP-44 support. */
 export interface GiftWrapSigner {
   pubkey: string;
@@ -123,10 +114,9 @@ export function createGiftWrap(
   recipientPubkey: string,
 ): NostrEvent {
   const randomKey = generateSecretKey(); // Uint8Array(32)
-  const randomKeyHex = bytesToHex(randomKey);
 
   const conversationKey = nip44.v2.utils.getConversationKey(
-    randomKeyHex,
+    randomKey,
     recipientPubkey,
   );
 

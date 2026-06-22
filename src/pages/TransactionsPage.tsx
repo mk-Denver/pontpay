@@ -67,13 +67,24 @@ type TxFilter = 'all' | 'deposit' | 'withdrawal' | 'transfer';
 const STATE_LABELS: Record<SwapState, string> = {
   requested: 'Requested',
   accepted: 'Accepted',
-  fiat_exchanged: 'Fiat Exchanged',
-  lightning_settled: 'Lightning Settled',
+  fiat_exchanged: 'Cash Exchanged',
+  lightning_settled: 'BTC Settled',
   completed: 'Completed',
   cancelled: 'Cancelled',
   disputed: 'Disputed',
   expired: 'Expired',
 };
+
+/** Context-aware state label for the progress bar. */
+function stateFlowLabel(state: SwapState, swapType: string): string {
+  if (state === 'fiat_exchanged') {
+    return swapType === 'deposit' ? 'Cash Given' : 'Cash Received';
+  }
+  if (state === 'lightning_settled') {
+    return swapType === 'deposit' ? 'BTC Received' : 'BTC Sent';
+  }
+  return STATE_LABELS[state];
+}
 
 const STATE_COLORS: Record<SwapState, string> = {
   requested: 'text-amber-600 bg-amber-500/10 border-amber-500/20',
@@ -443,7 +454,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
                     : 'bg-muted text-muted-foreground'
                   }`}>
                     {isPast && <Check className="mr-1 h-3 w-3" />}
-                    {STATE_LABELS[state]}
+                    {stateFlowLabel(state, swap.swapType)}
                   </div>
                   {i < STATE_FLOW.length - 1 && (
                     <div className={`h-px w-4 ${isPast ? 'bg-green-500/40' : 'bg-border'}`} />
@@ -459,16 +470,18 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
         )}
       </div>
 
-      {/* Lightning payment — for withdrawals, customer pays agent's invoice */}
+      {/* Lightning payment — for withdrawals, customer pays agent's invoice at kiosk */}
       {swap.swapType === 'withdrawal' && swap.state === 'accepted' && (
-        <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+        <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-4">
           <p className="mb-3 text-sm font-medium flex items-center gap-2">
-            <Zap className="h-4 w-4" /> Lightning payment required
+            <Zap className="h-4 w-4 text-orange-600" /> Pay at the kiosk
           </p>
           {agentInvoice ? (
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">
-                The agent sent you a Lightning invoice. Pay it to send BTC.
+                The agent sent you a Lightning invoice. Visit the kiosk and pay
+                it from your wallet to send BTC. The agent will then hand you
+                cash.
               </p>
               <code className="block truncate rounded bg-background px-2 py-1.5 text-xs">
                 {agentInvoice.payload.data.slice(0, 50)}...
@@ -487,23 +500,36 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
             </div>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Waiting for the agent to generate and send a Lightning invoice.
-              Check back in a moment.
+              Waiting for the agent to generate a Lightning invoice. Visit the
+              kiosk — the agent will send it to you when you arrive.
             </p>
           )}
         </div>
       )}
 
-      {/* Deposit status — customer's invoice was sent, waiting for agent to pay */}
+      {/* Deposit status — customer handed cash, waiting for agent to pay invoice */}
       {swap.swapType === 'deposit' && swap.state === 'accepted' && (
-        <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
+        <div className="rounded-lg border border-green-500/20 bg-green-500/5 p-4">
           <p className="text-sm font-medium flex items-center gap-2">
-            <Clock className="h-4 w-4 text-blue-600" /> Waiting for agent
+            <Clock className="h-4 w-4 text-green-600" /> At the kiosk
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Your Lightning invoice has been sent to the agent. Meet in person
-            to hand over cash. The agent will pay your invoice once fiat is
-            exchanged.
+            Hand over cash to the agent. Once they confirm cash received,
+            they'll pay your Lightning invoice and Bitcoin arrives in your
+            wallet instantly.
+          </p>
+        </div>
+      )}
+
+      {/* Deposit — cash exchanged, waiting for Lightning */}
+      {swap.swapType === 'deposit' && swap.state === 'fiat_exchanged' && (
+        <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
+          <p className="text-sm font-medium flex items-center gap-2">
+            <Clock className="h-4 w-4 text-blue-600" /> Cash received by agent
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            The agent confirmed cash received. They're now paying your Lightning
+            invoice — Bitcoin will arrive in your wallet momentarily.
           </p>
         </div>
       )}

@@ -49,19 +49,19 @@ const STEPS = [
     icon: Wallet,
     title: 'Connect your wallet',
     description:
-      'Link an existing Lightning wallet via Nostr Wallet Connect (NWC) or create a new one in seconds.',
+      'Link a Lightning wallet via NWC or create an in-browser ecash wallet. Your Bitcoin is always self-custodial.',
   },
   {
     icon: Store,
-    title: 'Find an agent',
+    title: 'Find an agent kiosk',
     description:
-      'Browse the decentralized agent directory. Agents convert between BTC and local fiat currencies.',
+      'Browse the decentralized agent directory. Agents operate kiosks where you can deposit cash for BTC or withdraw BTC for cash.',
   },
   {
     icon: Send,
-    title: 'Deposit, withdraw, or transfer',
+    title: 'Deposit or withdraw',
     description:
-      'Send fiat to an agent for a BTC deposit, cash out BTC for fiat, or transfer sats peer-to-peer instantly.',
+      'Hand cash to an agent and receive Bitcoin instantly. Or pay the agent\'s Lightning invoice and walk away with cash.',
   },
 ];
 
@@ -119,7 +119,7 @@ export default function Index() {
               Powered by the Pontmore Protocol
             </div>
             <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl">
-              The agent network for{' '}
+              The agent kiosk network for{' '}
               <span className="bg-gradient-to-r from-orange-500 to-amber-600 bg-clip-text text-transparent">
                 borderless Bitcoin
               </span>{' '}
@@ -127,8 +127,8 @@ export default function Index() {
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground sm:text-xl">
               An M-Pesa-style agent network built on Bitcoin Lightning and Nostr.
-              Deposit, withdraw, and transfer instantly — with fees so low they
-              make traditional remittance obsolete.
+              Walk into a kiosk, hand over cash, and receive Bitcoin instantly —
+              or pay a Lightning invoice and walk away with cash.
             </p>
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <LoginArea className="w-full sm:w-auto" />

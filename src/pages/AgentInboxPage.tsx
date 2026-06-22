@@ -82,16 +82,26 @@ interface SwapAction {
   icon: typeof Check;
 }
 
-/** Valid agent actions for a given swap state (in-person model, no escrow). */
+/**
+ * Valid agent actions for a given swap state, context-aware per swap type.
+ *
+ * Deposit (cash → BTC):
+ *   accepted → "Cash received" (fiat_exchanged) → pay invoice → "Lightning sent" → Complete
+ *
+ * Withdrawal (BTC → cash):
+ *   accepted → send invoice → "Lightning received" (lightning_settled) → "Cash paid out" → Complete
+ */
 function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
   const actions: SwapAction[] = [];
+  const isDeposit = swapType === 'deposit';
+  const isWithdrawal = swapType === 'withdrawal';
 
   switch (state) {
     case 'requested':
       actions.push({
-        label: 'Accept swap',
+        label: 'Accept',
         nextState: 'accepted',
-        reason: 'Agent accepted the swap request, arranging to meet',
+        reason: 'Agent accepted the swap — customer can visit the kiosk',
         variant: 'default',
         icon: Check,
       });
@@ -105,54 +115,62 @@ function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
       break;
 
     case 'accepted':
-      // For deposit: customer gives cash first, then agent pays invoice
-      // For withdrawal: agent sends invoice, customer pays, then cash changes hands
-      actions.push({
-        label: 'Fiat exchanged',
-        nextState: 'fiat_exchanged',
-        reason: 'Cash changed hands in person',
-        variant: 'outline',
-        icon: CheckCircle2,
-      });
-      actions.push({
-        label: 'Lightning settled',
-        nextState: 'lightning_settled',
-        reason: 'Lightning payment confirmed',
-        variant: 'outline',
-        icon: Zap,
-      });
+      if (isDeposit) {
+        // Deposit: customer hands cash first, then agent pays invoice
+        actions.push({
+          label: 'Cash received',
+          nextState: 'fiat_exchanged',
+          reason: 'Agent confirms cash received from customer at kiosk',
+          variant: 'outline',
+          icon: CheckCircle2,
+        });
+      } else if (isWithdrawal) {
+        // Withdrawal: agent sends invoice, customer pays, then agent gives cash
+        actions.push({
+          label: 'Lightning received',
+          nextState: 'lightning_settled',
+          reason: 'Agent confirms customer paid the Lightning invoice',
+          variant: 'outline',
+          icon: Zap,
+        });
+      }
       break;
 
     case 'fiat_exchanged':
-      // Still need the Lightning leg
+      // Deposit: cash received, now pay the customer's Lightning invoice
       actions.push({
-        label: 'Lightning settled',
+        label: 'Lightning sent',
         nextState: 'lightning_settled',
-        reason: 'Lightning payment confirmed',
+        reason: 'Agent paid customer Lightning invoice — BTC sent',
         variant: 'default',
         icon: Zap,
       });
       break;
 
     case 'lightning_settled':
-      // Still need the fiat leg
-      actions.push({
-        label: 'Fiat exchanged',
-        nextState: 'fiat_exchanged',
-        reason: 'Cash changed hands in person',
-        variant: 'default',
-        icon: CheckCircle2,
-      });
+      if (isWithdrawal) {
+        // Withdrawal: Lightning received, now hand over cash
+        actions.push({
+          label: 'Cash paid out',
+          nextState: 'fiat_exchanged',
+          reason: 'Agent handed cash to customer at kiosk',
+          variant: 'default',
+          icon: CheckCircle2,
+        });
+      }
       break;
   }
 
   // Complete action — available when both legs are done
-  // (both fiat_exchanged and lightning_settled have been reached)
   if (state === 'fiat_exchanged' || state === 'lightning_settled') {
+    // For deposits: fiat_exchanged means cash received; need lightning_settled too
+    // For withdrawals: lightning_settled means invoice paid; need fiat_exchanged too
+    // But the agent can complete if they've done both (the other one may have been done
+    // in a previous transition that we don't see in current state alone — the agent knows)
     actions.push({
       label: 'Complete swap',
       nextState: 'completed',
-      reason: 'Both fiat and Lightning legs settled — swap complete',
+      reason: 'Both cash and Lightning legs settled — swap complete',
       variant: 'default',
       icon: CheckCircle2,
     });
@@ -163,7 +181,7 @@ function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
     actions.push({
       label: 'Cancel',
       nextState: 'cancelled',
-      reason: 'Swap cancelled',
+      reason: 'Swap cancelled by agent',
       variant: 'destructive',
       icon: X,
     });
@@ -180,9 +198,6 @@ function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
     });
   }
 
-  // Use swapType to avoid unused param warning
-  void swapType;
-
   return actions;
 }
 
@@ -197,11 +212,22 @@ const STATE_FLOW: SwapState[] = [
 
 const TERMINAL_STATES: SwapState[] = ['cancelled', 'disputed', 'expired'];
 
+/** Context-aware state flow label for the progress bar. */
+function stateFlowLabel(state: SwapState, swapType: string): string {
+  if (state === 'fiat_exchanged') {
+    return swapType === 'deposit' ? 'Cash Received' : 'Cash Paid Out';
+  }
+  if (state === 'lightning_settled') {
+    return swapType === 'deposit' ? 'BTC Sent' : 'BTC Received';
+  }
+  return STATE_LABELS[state];
+}
+
 const STATE_LABELS: Record<SwapState, string> = {
   requested: 'Requested',
   accepted: 'Accepted',
-  fiat_exchanged: 'Fiat Exchanged',
-  lightning_settled: 'Lightning Settled',
+  fiat_exchanged: 'Cash Exchanged',
+  lightning_settled: 'BTC Settled',
   completed: 'Completed',
   cancelled: 'Cancelled',
   disputed: 'Disputed',
@@ -276,7 +302,7 @@ export default function AgentInboxPage() {
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Agent Inbox</h1>
           <p className="mt-1 text-muted-foreground">
-            Incoming swap requests directed at you (in-person exchange, no escrow).
+            Incoming swap requests from customers at your kiosk.
           </p>
         </div>
 
@@ -462,7 +488,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
         <DetailRow label="Customer" value={`${swap.customerPubkey.slice(0, 16)}...`} mono />
         <DetailRow label="Swap ID" value={swap.swapId} mono />
         <DetailRow label="Created" value={new Date(swap.createdAt * 1000).toLocaleString()} />
-        <DetailRow label="Mode" value="In-person (no escrow)" />
+        <DetailRow label="Mode" value="Kiosk (cash)" />
       </div>
 
       {/* State machine progress */}
@@ -481,7 +507,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
                     : 'bg-muted text-muted-foreground'
                   }`}>
                     {isPast && <Check className="mr-1 h-3 w-3" />}
-                    {STATE_LABELS[state]}
+                    {stateFlowLabel(state, swap.swapType)}
                   </div>
                   {i < STATE_FLOW.length - 1 && (
                     <div className={`h-px w-4 ${isPast ? 'bg-green-500/40' : 'bg-border'}`} />
@@ -509,7 +535,8 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
               {customerInvoice ? (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Customer sent a Lightning invoice. Pay it to send BTC.
+                    Customer handed over cash. Now pay their Lightning invoice
+                    to send BTC.
                   </p>
                   <code className="block truncate rounded bg-background px-2 py-1.5 text-xs">
                     {customerInvoice.payload.data.slice(0, 50)}...
@@ -530,8 +557,8 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Waiting for the customer to send a Lightning invoice via the
-                  private lane. Ask them to generate and send one.
+                  Waiting for the customer to send a Lightning invoice. They
+                  should generate one from their wallet before visiting.
                 </p>
               )}
             </div>
@@ -542,14 +569,15 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
               {hasSentInvoice ? (
                 <p className="text-xs text-green-600 flex items-center gap-1.5">
                   <CheckCircle2 className="h-4 w-4" /> Invoice sent to customer.
-                  Waiting for them to pay. Confirm once the Lightning payment
-                  is received.
+                  They'll pay it at the kiosk. Confirm once the Lightning
+                  payment arrives.
                 </p>
               ) : hasWallet ? (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
                     Generate a Lightning invoice for the customer to pay
-                    ({formatSats(swap.bitcoinAmountSats)}).
+                    ({formatSats(swap.bitcoinAmountSats)}). They'll pay it when
+                    they arrive at the kiosk.
                   </p>
                   <Button onClick={handleGenerateAndSendInvoice} disabled={generatingInvoice || isCreatingInvoice} size="sm" className="w-full">
                     {generatingInvoice || isCreatingInvoice ? (
