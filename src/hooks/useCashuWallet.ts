@@ -514,6 +514,7 @@ export function useCashuWallet() {
 
     // Mints
     allMints,
+    customMints,
     selectedMint,
     selectedMintUrl,
     setSelectedMintUrl,
@@ -524,6 +525,7 @@ export function useCashuWallet() {
     balance: totalBalance,
     currentMintBalance,
     totalBalance,
+    proofsByMint,
 
     // Transactions
     transactions: txHistory,

@@ -860,7 +860,7 @@ function SettingsTab({ isCashu, cashu, unified, showSeedDialog, setShowSeedDialo
                   </div>
                   <div className="flex items-center gap-2">
                     {cashu.selectedMintUrl === mint.url && <Badge variant="secondary" className="text-xs">Active</Badge>}
-                    {cashu.customMints.some((m) => m.url === mint.url) && (
+                    {(cashu.customMints ?? []).some((m) => m.url === mint.url) && (
                       <Button size="sm" variant="ghost" onClick={() => cashu.removeCustomMint(mint.url)}>
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
