@@ -8,7 +8,6 @@ import {
   Zap,
   Wallet as WalletIcon,
   Store,
-  Copy,
   Check,
   Loader2,
   Receipt,
@@ -24,7 +23,6 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Separator } from '@/components/ui/separator';
 import {
   Select,
   SelectContent,
@@ -38,7 +36,6 @@ import { useAgents } from '@/hooks/useAgents';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
 import { useSwapMessages } from '@/hooks/useSwapMessages';
 import { formatSats, estimateFiat } from '@/lib/pontmore';
-import { QRCodeCanvas } from '@/components/ui/qrcode';
 
 const CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
 const BTC_PRICE_USD = 65000;
@@ -258,11 +255,23 @@ function ActionButton({
 }
 
 function SwapRow({ swap }: { swap: import('@/hooks/useSwapStateMachine').LocalSwapRecord }) {
-  const Icon = swap.swapType === 'deposit' ? ArrowDownToLine : swap.swapType === 'withdraw' ? ArrowUpFromLine : Send;
+  const Icon = swap.swapType === 'deposit' ? ArrowDownToLine : swap.swapType === 'withdrawal' ? ArrowUpFromLine : Send;
   const statusClass =
     swap.state === 'completed' ? 'text-green-600 bg-green-500/10 border-green-500/20' :
     swap.state === 'cancelled' || swap.state === 'disputed' || swap.state === 'expired' ? 'text-red-600 bg-red-500/10 border-red-500/20' :
+    swap.state === 'lightning_settled' ? 'text-green-600 bg-green-500/10 border-green-500/20' :
     'text-amber-600 bg-amber-500/10 border-amber-500/20';
+
+  const stateLabel: Record<string, string> = {
+    requested: 'Requested',
+    accepted: 'Accepted',
+    fiat_exchanged: 'Fiat Exchanged',
+    lightning_settled: 'Lightning Settled',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+    disputed: 'Disputed',
+    expired: 'Expired',
+  };
 
   return (
     <Card className="transition-colors hover:bg-muted/30">
@@ -278,7 +287,7 @@ function SwapRow({ swap }: { swap: import('@/hooks/useSwapStateMachine').LocalSw
             {' · '}{new Date(swap.createdAt * 1000).toLocaleDateString()}
           </p>
         </div>
-        <Badge variant="outline" className={`shrink-0 capitalize ${statusClass}`}>{swap.state}</Badge>
+        <Badge variant="outline" className={`shrink-0 capitalize ${statusClass}`}>{stateLabel[swap.state] ?? swap.state}</Badge>
       </CardContent>
     </Card>
   );
@@ -324,7 +333,6 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
         amountSats: sats,
         fiatAmount: fiatEstimate,
         fiatCurrency: currency,
-        escrowReference: selectedAgent?.escrowRef ?? '',
       });
 
       // Step 3: Send the invoice + payment instructions via NIP-17 private lane
@@ -482,7 +490,7 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
 
 function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const { agents, isLoading } = useAgents();
-  const { hasWallet, balance, makeInvoice, isCreatingInvoice } = useUnifiedWallet();
+  const { hasWallet, balance } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
   const { sendMessage, hasNip44 } = useSwapMessages();
   const [selectedAgentPubkey, setSelectedAgentPubkey] = useState(preselectedAgent ?? '');
@@ -490,21 +498,14 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const [currency, setCurrency] = useState('KES');
   const [memo, setMemo] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [generatedInvoice, setGeneratedInvoice] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const selectedAgent = agents.find((a) => a.event.pubkey === selectedAgentPubkey);
   const sats = parseInt(amountSats) || 0;
   const fiatEstimate = estimateFiat(sats, BTC_PRICE_USD, currency);
 
-  const handleGenerateInvoice = async () => {
-    if (!sats) return;
-    const result = await makeInvoice(sats, `Pontmore withdrawal ${memo}`);
-    if (result) setGeneratedInvoice(result.invoice);
-  };
-
   const handleSubmit = async () => {
-    if (!sats || !selectedAgentPubkey || !generatedInvoice) return;
+    if (!sats || !selectedAgentPubkey) return;
     setSubmitting(true);
     setStatusMsg(null);
 
@@ -517,19 +518,11 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
         amountSats: sats,
         fiatAmount: fiatEstimate,
         fiatCurrency: currency,
-        escrowReference: selectedAgent?.escrowRef ?? generatedInvoice,
       });
 
-      // Step 2: Send the invoice + payout instructions via NIP-17 private lane
+      // Step 2: Send payout instructions via NIP-17 private lane
       if (hasNip44 && swapId) {
-        setStatusMsg('Sending encrypted invoice to agent…');
-        await sendMessage.mutateAsync({
-          swapId,
-          recipientPubkey: selectedAgentPubkey,
-          payloadType: 'invoice',
-          data: generatedInvoice,
-          label: `Withdrawal ${sats} sats`,
-        });
+        setStatusMsg('Sending encrypted payout instructions to agent…');
         if (memo) {
           await sendMessage.mutateAsync({
             swapId,
@@ -539,9 +532,9 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
             label: 'Fiat payout instructions',
           });
         }
-        setStatusMsg('Withdrawal request sent! The agent will pay your invoice and send fiat.');
+        setStatusMsg('Withdrawal request sent! The agent will accept and send you a Lightning invoice. Check your History to pay it.');
       } else {
-        setStatusMsg('Swap request published. Upgrade your signer to send encrypted invoice details.');
+        setStatusMsg('Swap request published. The agent will send a Lightning invoice for you to pay.');
       }
     } finally {
       setSubmitting(false);
@@ -549,7 +542,6 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
         setStatusMsg(null);
         setAmountSats('');
         setMemo('');
-        setGeneratedInvoice(null);
       }, 8000);
     }
   };
@@ -562,7 +554,7 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
           <div className="text-sm">
             <p className="font-medium text-amber-600">Wallet required</p>
             <p className="text-muted-foreground">
-              Connect a Lightning wallet to withdraw.{' '}
+              Connect a Lightning wallet to withdraw — you'll need to pay the agent's invoice.{' '}
               <Link to="/wallet" className="font-medium text-foreground underline">Connect now</Link>.
             </p>
           </div>
@@ -581,7 +573,7 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
             <p className="font-medium text-amber-600">NIP-44 required for private lane</p>
             <p className="text-muted-foreground">
               Your signer doesn't support encryption. The swap request will be
-              published, but you won't be able to send the invoice privately.
+              published, but payout instructions can't be sent privately.
             </p>
           </div>
         </div>
@@ -632,45 +624,19 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
 
       <div>
         <Label htmlFor="withdraw-memo">Payout instructions (optional)</Label>
-        <Textarea id="withdraw-memo" placeholder="e.g. M-Pesa to 254712345678, or bank acc 1234567890" value={memo} onChange={(e) => setMemo(e.target.value)} rows={2} />
+        <Textarea id="withdraw-memo" placeholder="e.g. M-Pesa to 254712345678, or cash pickup at Westlands booth" value={memo} onChange={(e) => setMemo(e.target.value)} rows={2} />
         <p className="mt-1 text-xs text-muted-foreground">
           Sent encrypted to the agent via NIP-17 — not in the public swap event.
         </p>
       </div>
 
-      {hasWallet && sats > 0 && !generatedInvoice && (
-        <Button onClick={handleGenerateInvoice} variant="outline" className="w-full" disabled={isCreatingInvoice}>
-          {isCreatingInvoice ? (
-            <><Loader2 className="h-4 w-4 animate-spin" /> Generating invoice…</>
-          ) : (
-            <><Zap className="h-4 w-4" /> Generate Lightning invoice</>
-          )}
-        </Button>
-      )}
-
-      {generatedInvoice && (
-        <div className="space-y-3">
-          <Separator />
-          <div className="rounded-lg border bg-muted/30 p-4">
-            <p className="mb-2 text-sm font-medium">Lightning invoice generated</p>
-            <div className="flex justify-center rounded-lg bg-white p-4">
-              <QRCodeCanvas value={`lightning:${generatedInvoice}`} size={180} />
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <code className="flex-1 truncate rounded bg-background px-2 py-1.5 text-xs">{generatedInvoice.slice(0, 40)}...</code>
-              <CopyButton text={generatedInvoice} />
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
         <Shield className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />
         <p>
-          This publishes a PIP-02 swap request (kind 7300). The agent pays your
-          Lightning invoice and dispenses fiat. The invoice and payout details
-          are sent encrypted via the NIP-17 private lane — only the agent can
-          read them.
+          This publishes a PIP-02 swap request (kind 7300). The agent will
+          accept and send you a Lightning invoice to pay. You meet in person,
+          pay the invoice, and receive cash. Check your History page to pay the
+          agent's invoice.
         </p>
       </div>
 
@@ -681,7 +647,7 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
         </div>
       )}
 
-      <Button onClick={handleSubmit} disabled={submitting || !selectedAgentPubkey || !generatedInvoice} className="w-full">
+      <Button onClick={handleSubmit} disabled={submitting || !selectedAgentPubkey || !amountSats} className="w-full">
         {submitting ? (
           <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
         ) : (
@@ -713,16 +679,15 @@ function TransferForm() {
     const result = await payInvoice(bolt11);
     setPaying(false);
 
-    if (result) {
-      // Publish a swap request for record-keeping (PIP-02)
-      await publishSwapRequest.mutateAsync({
-        swapType: 'transfer',
-        agentPubkey: recipientPubkey, // in a transfer, the "agent" is the recipient
-        amountSats: 0, // amount is in the invoice
-        fiatAmount: 0,
-        fiatCurrency: 'BTC',
-        escrowReference: bolt11,
-      });
+      if (result) {
+        // Publish a swap request for record-keeping (PIP-02)
+        await publishSwapRequest.mutateAsync({
+          swapType: 'transfer',
+          agentPubkey: recipientPubkey, // in a transfer, the "agent" is the recipient
+          amountSats: 0, // amount is in the invoice
+          fiatAmount: 0,
+          fiatCurrency: 'BTC',
+        });
     }
 
     setSubmitting(false);
@@ -790,22 +755,5 @@ function TransferForm() {
         )}
       </Button>
     </div>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={() => {
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }}
-    >
-      {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-    </Button>
   );
 }

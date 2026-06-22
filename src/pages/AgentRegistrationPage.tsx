@@ -15,7 +15,6 @@ import {
   ArrowLeft,
   Globe,
   Info,
-  Shield,
   ArrowRight,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
@@ -77,17 +76,6 @@ function defaultInput(): AgentRegistrationInput {
       pricingMargin: '1.5',
     },
     pricingPolicy: 'percentage_margin',
-    escrow: {
-      identifier: 'default',
-      escrowType: 'lightning_hold_invoice',
-      networks: ['bitcoin', 'lightning'],
-      fundingRules: { required_confirmation: 'invoice_held' },
-      releaseRules: { release_trigger: 'counterparty_fiat_payment_confirmed' },
-      disputeRules: { policy: 'operator_resolved' },
-      referenceFormat: 'bolt11',
-      invoiceNetwork: 'lightning',
-      payoutNetwork: 'lightning',
-    },
     fiatCurrencies: [],
     relays: [],
   };
@@ -449,69 +437,6 @@ export default function AgentRegistrationPage() {
             </CardContent>
           </Card>
 
-          {/* PIP-01: Escrow Descriptor */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Shield className="h-5 w-5" /> Escrow Descriptor (PIP-01)
-              </CardTitle>
-              <CardDescription>
-                Public escrow declaration referenced by your agent definition.
-                kind 30361.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <Label htmlFor="escrow-type">Escrow type</Label>
-                  <Select
-                    value={input.escrow.escrowType}
-                    onValueChange={(v) => setInput((prev) => ({
-                      ...prev,
-                      escrow: { ...prev.escrow, escrowType: v },
-                    }))}
-                  >
-                    <SelectTrigger id="escrow-type">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="lightning_hold_invoice">Lightning hold invoice</SelectItem>
-                      <SelectItem value="custodial_escrow">Custodial escrow</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label htmlFor="ref-format">Reference format</Label>
-                  <Select
-                    value={input.escrow.referenceFormat}
-                    onValueChange={(v) => setInput((prev) => ({
-                      ...prev,
-                      escrow: { ...prev.escrow, referenceFormat: v },
-                    }))}
-                  >
-                    <SelectTrigger id="ref-format">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="bolt11">BOLT11</SelectItem>
-                      <SelectItem value="bolt11_or_custodial_escrow_reference">BOLT11 or custodial ref</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm">
-                <p className="font-medium">Escrow configuration</p>
-                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                  <p><strong className="text-foreground">Networks:</strong> {input.escrow.networks.join(', ')}</p>
-                  <p><strong className="text-foreground">Funding:</strong> {input.escrow.fundingRules.required_confirmation}</p>
-                  <p><strong className="text-foreground">Release:</strong> {input.escrow.releaseRules.release_trigger}</p>
-                  <p><strong className="text-foreground">Dispute:</strong> {input.escrow.disputeRules.policy}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
           {/* Relays */}
           <Card>
             <CardHeader>
@@ -564,10 +489,10 @@ export default function AgentRegistrationPage() {
               <p className="font-medium text-foreground">How registration works</p>
               <p className="mt-1">
                 Your agent definition is published as a Nostr addressable event
-                (kind 30360) with a companion escrow descriptor (kind 30361).
-                Both are signed by your Nostr identity and stored on
+                (kind 30360), signed by your Nostr identity and stored on
                 decentralized relays. Users discover you via the Pontmore agent
-                directory. You can update or delete your listing at any time.
+                directory. PontPay uses an in-person exchange model — no escrow
+                is required. You can update or delete your listing at any time.
               </p>
             </div>
           </div>

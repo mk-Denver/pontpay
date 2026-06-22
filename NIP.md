@@ -11,7 +11,7 @@ escrow declaration, and swap lifecycle coordination.
 | PIP | Title | Kind(s) | Status |
 |-----|-------|---------|--------|
 | PIP-00 | Agent Definition | 30360 | Implemented |
-| PIP-01 | Escrow Descriptor | 30361 | Implemented |
+| PIP-01 | Escrow Descriptor | 30361 | Not used (in-person model) |
 | PIP-02 | Swap State Machine | 7300, 7301, 7302, 7303, 7304, 30362 | Implemented |
 | PIP-03 | Dispute Policy | 7303 | Implemented (dispute events) |
 
@@ -22,9 +22,8 @@ Agents publish a kind 30360 addressable event to register on the network.
 - `d` tag: stable identifier (usually `agent`)
 - `t` tag: `agent` for relay-level discovery
 - `relay` tags: relay preferences (required)
-- `a` tag: reference to the default escrow descriptor (kind 30361 coordinate)
 - `f` tags: supported fiat currencies (recommended)
-- Content: JSON with `version`, `name`, `about`, `capabilities`, `pricing_policy`, `escrow`, `updated_at`
+- Content: JSON with `version`, `name`, `about`, `capabilities`, `pricing_policy`, `exchange_mode`, `updated_at`
 
 ### Discovery
 
@@ -35,27 +34,44 @@ nostr.query([{ kinds: [30360], '#t': ['agent'], limit: 100 }]);
 ### Registration Flow
 
 1. Agent fills out registration form (name, capabilities, currencies, regions, limits)
-2. Client publishes a companion escrow descriptor (kind 30361) first
-3. Client publishes the agent definition (kind 30360) referencing the escrow via `a` tag
-4. Updating: re-publish with same `d` tag (addressable replacement)
-5. Deletion: NIP-09 kind 5 event with `a` tag referencing the coordinate
+2. Client publishes the agent definition (kind 30360) — no escrow descriptor needed
+3. Updating: re-publish with same `d` tag (addressable replacement)
+4. Deletion: NIP-09 kind 5 event with `a` tag referencing the coordinate
 
 ## PIP-01: Escrow Descriptor (kind 30361)
 
-Public escrow declaration referenced by agent definitions and swaps.
+**Not used in PontPay's in-person model.** PontPay uses direct in-person cash
+exchange — no escrow is required. The escrow descriptor types are retained in
+the protocol library for compatibility but agents are not required to publish
+them. Agent definitions (kind 30360) do not reference escrow descriptors.
 
-- `d` tag: stable identifier (usually `default`)
-- `network` tags: settlement networks for relay filtering
-- Content: JSON with `version`, `escrow_type`, `networks`, `funding_rules`, `release_rules`, `dispute_rules`, `reference_format`, `updated_at`
+### In-Person Exchange Flow
 
-### Supported Escrow Types
+**Deposit (fiat → BTC):**
+1. Customer generates a Lightning invoice and publishes a swap request
+2. Customer sends the invoice + payment instructions via NIP-17 gift wrap
+3. Agent sees request in inbox, accepts
+4. Agent and customer meet in person; customer gives cash
+5. Agent pays the customer's Lightning invoice from their wallet
+6. Agent marks swap completed
 
-- `lightning_hold_invoice` — Lightning hold invoice as escrow lock
-- `custodial_escrow` — Operator custody with network-specific implementations
+**Withdrawal (BTC → fiat):**
+1. Customer publishes a swap request with payout instructions
+2. Agent sees request in inbox, accepts
+3. Agent generates a Lightning invoice and sends it to customer via NIP-17
+4. Customer sees invoice in their History page, pays it
+5. Agent confirms Lightning payment received
+6. Agent and customer meet; agent gives cash
+7. Agent marks swap completed
 
 ## PIP-02: Swap State Machine
 
 Swaps are modeled as Nostr-native state machines with an append-only event log.
+
+**In-person exchange model (no escrow):** PontPay uses an in-person agent
+network where the customer and agent meet face-to-face. Cash changes hands in
+person, and Lightning payments settle the BTC leg. No escrow (hold invoices,
+custodial escrow) is required.
 
 ### Event Types
 
@@ -68,9 +84,17 @@ Swaps are modeled as Nostr-native state machines with an append-only event log.
 | 7304 | Note | Immutable | Optional human-readable operational note |
 | 30362 | Snapshot | Addressable | Replaceable materialized view for fast lookup |
 
-### Swap States
+### Swap States (In-Person Model)
 
-`requested` → `escrow_init` → `escrow_funded` → `fiat_pending` → `fiat_confirmed` → `payout_pending` → `payout_sent` → `completed`
+`requested` → `accepted` → `fiat_exchanged` → `lightning_settled` → `completed`
+
+Both `fiat_exchanged` and `lightning_settled` must occur before `completed`.
+The order depends on the swap type:
+
+- **Deposit** (fiat → BTC): `requested → accepted → fiat_exchanged → lightning_settled → completed`
+  (customer gives cash, then agent pays customer's Lightning invoice)
+- **Withdrawal** (BTC → fiat): `requested → accepted → lightning_settled → fiat_exchanged → completed`
+  (customer pays agent's Lightning invoice, then agent gives cash)
 
 Branches: `cancelled`, `disputed`, `expired`
 
@@ -83,7 +107,7 @@ Branches: `cancelled`, `disputed`, `expired`
   "swap_type": "deposit",
   "agent": "<agent_pubkey>",
   "customer": "<customer_pubkey>",
-  "escrow_reference": "30361:<pubkey>:default",
+  "escrow_reference": "in_person",
   "fiat": { "currency": "KES", "amount": 7500 },
   "bitcoin": { "amount_sats": 50000, "network": "lightning" },
   "expiry": 1719127056
@@ -189,11 +213,13 @@ WebLN browser extension detection and manual QR fallback are also supported.
 
 ## Security Considerations
 
-- Agent definitions (kind 30360) and escrow descriptors (kind 30361) are
-  **public** and signed by the agent's Nostr identity
+- Agent definitions (kind 30360) are **public** and signed by the agent's
+  Nostr identity — no escrow descriptor is required (in-person model)
 - Swap state machine events (kinds 7300-7304) are **public** and immutable
 - Sensitive payloads are exchanged via **NIP-17 Gift Wrap** (encrypted)
 - Lightning payments settle with instant finality — Nostr is the messaging
   layer, not the settlement layer
 - Users should verify agent identity via Nostr social proof (NIP-05,
   follower graph) before transacting
+- In-person cash exchange carries inherent physical risk — meet in safe,
+  public locations

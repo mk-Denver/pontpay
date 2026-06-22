@@ -96,7 +96,7 @@ export function useSwapStateMachine() {
       amountSats: number;
       fiatAmount: number;
       fiatCurrency: string;
-      escrowReference: string;
+      escrowReference?: string;
       expirySeconds?: number;
     }): Promise<string> => {
       if (!myPubkey) throw new Error('Not logged in');
@@ -110,7 +110,7 @@ export function useSwapStateMachine() {
         swap_type: params.swapType,
         agent: params.agentPubkey,
         customer: myPubkey,
-        escrow_reference: params.escrowReference,
+        escrow_reference: params.escrowReference ?? 'in_person',
         fiat: {
           currency: params.fiatCurrency,
           amount: params.fiatAmount,
@@ -141,7 +141,7 @@ export function useSwapStateMachine() {
         amountSats: params.amountSats,
         fiatAmount: params.fiatAmount,
         fiatCurrency: params.fiatCurrency,
-        escrowReference: params.escrowReference,
+        escrowReference: params.escrowReference ?? 'in_person',
         state: 'requested',
         createdAt: event.created_at,
         updatedAt: event.created_at,
@@ -197,7 +197,7 @@ export function useSwapStateMachine() {
         bitcoin_amount_sats: params.amountSats,
         fiat_amount: params.fiatAmount,
         fiat_currency: params.fiatCurrency,
-        escrow_reference: params.escrowReference,
+        escrow_reference: params.escrowReference || 'in_person',
         updated_at: Math.floor(Date.now() / 1000),
       };
 
@@ -225,7 +225,7 @@ export function useSwapStateMachine() {
       swapId: string;
       newState: SwapState;
       prevState: SwapState;
-      actorRole: 'agent' | 'customer' | 'escrow_operator' | 'system';
+      actorRole: 'agent' | 'customer' | 'system';
       reason: string;
     }) => {
       const content: SwapTransitionContent = {

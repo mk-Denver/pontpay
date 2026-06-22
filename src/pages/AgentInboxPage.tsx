@@ -1,15 +1,18 @@
 /**
- * AgentInboxPage — the agent-side swap management UI.
+ * AgentInboxPage — the agent-side swap management UI for in-person swaps.
  *
  * Shows incoming swap requests directed at the current user (as the tagged
  * agent on kind 7300). The agent can:
  *   - Accept or reject incoming requests
  *   - Advance the swap state machine (kind 7301 transitions)
- *   - Publish evidence (kind 7302)
+ *   - For deposits: pay the customer's Lightning invoice from their wallet
+ *   - For withdrawals: generate a Lightning invoice and send it to the customer
  *   - View and send encrypted private messages (NIP-17 gift wrap)
+ *   - Publish evidence (kind 7302)
  *
- * This closes the loop: when a customer publishes a swap request, the agent
- * discovers it here and can act on it.
+ * In-person flow (no escrow):
+ *   Deposit:     requested → accepted → fiat_exchanged → lightning_settled → completed
+ *   Withdrawal:  requested → accepted → lightning_settled → fiat_exchanged → completed
  */
 
 import { useSeoMeta } from '@unhead/react';
@@ -32,10 +35,11 @@ import {
   Receipt,
   CheckCircle2,
   Clock,
+  Wallet as WalletIcon,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
@@ -63,7 +67,8 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useAgentRegistration } from '@/hooks/useAgentRegistration';
 import { useIncomingSwaps } from '@/hooks/useIncomingSwaps';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
-import { useSwapMessages, type SwapPayloadType } from '@/hooks/useSwapMessages';
+import { useSwapMessages, type SwapPayloadType, type SwapMessage } from '@/hooks/useSwapMessages';
+import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { useAuthor } from '@/hooks/useAuthor';
 import { formatSats, type SwapState, type PontmoreSwap } from '@/lib/pontmore';
 
@@ -77,7 +82,7 @@ interface SwapAction {
   icon: typeof Check;
 }
 
-/** Valid agent actions for a given swap state. */
+/** Valid agent actions for a given swap state (in-person model, no escrow). */
 function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
   const actions: SwapAction[] = [];
 
@@ -85,8 +90,8 @@ function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
     case 'requested':
       actions.push({
         label: 'Accept swap',
-        nextState: 'escrow_init',
-        reason: 'Agent accepted the swap request and is initializing escrow',
+        nextState: 'accepted',
+        reason: 'Agent accepted the swap request, arranging to meet',
         variant: 'default',
         icon: Check,
       });
@@ -99,86 +104,73 @@ function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
       });
       break;
 
-    case 'escrow_init':
-      // Waiting for customer to fund escrow — no agent action needed
-      break;
-
-    case 'escrow_funded':
-      if (swapType === 'deposit') {
-        // For deposits: customer funded BTC escrow, now waiting for fiat
-        actions.push({
-          label: 'Fiat received',
-          nextState: 'fiat_confirmed',
-          reason: 'Agent confirms fiat payment received from customer',
-          variant: 'default',
-          icon: CheckCircle2,
-        });
-      } else if (swapType === 'withdrawal') {
-        // For withdrawals: customer paid BTC, agent needs to send fiat
-        actions.push({
-          label: 'Sending fiat payout',
-          nextState: 'payout_pending',
-          reason: 'Agent initiated fiat payout to customer',
-          variant: 'default',
-          icon: Send,
-        });
-      }
-      break;
-
-    case 'fiat_pending':
-      if (swapType === 'deposit') {
-        actions.push({
-          label: 'Confirm fiat received',
-          nextState: 'fiat_confirmed',
-          reason: 'Agent confirms fiat payment received',
-          variant: 'default',
-          icon: CheckCircle2,
-        });
-      }
-      break;
-
-    case 'fiat_confirmed':
-      if (swapType === 'deposit') {
-        actions.push({
-          label: 'Release BTC payout',
-          nextState: 'payout_pending',
-          reason: 'Agent releasing BTC to customer via Lightning',
-          variant: 'default',
-          icon: Zap,
-        });
-      }
-      break;
-
-    case 'payout_pending':
+    case 'accepted':
+      // For deposit: customer gives cash first, then agent pays invoice
+      // For withdrawal: agent sends invoice, customer pays, then cash changes hands
       actions.push({
-        label: 'Mark payout sent',
-        nextState: 'payout_sent',
-        reason: 'Agent confirms payout has been sent',
-        variant: 'default',
+        label: 'Fiat exchanged',
+        nextState: 'fiat_exchanged',
+        reason: 'Cash changed hands in person',
+        variant: 'outline',
         icon: CheckCircle2,
+      });
+      actions.push({
+        label: 'Lightning settled',
+        nextState: 'lightning_settled',
+        reason: 'Lightning payment confirmed',
+        variant: 'outline',
+        icon: Zap,
       });
       break;
 
-    case 'payout_sent':
+    case 'fiat_exchanged':
+      // Still need the Lightning leg
       actions.push({
-        label: 'Complete swap',
-        nextState: 'completed',
-        reason: 'Swap fully settled — both sides confirmed',
+        label: 'Lightning settled',
+        nextState: 'lightning_settled',
+        reason: 'Lightning payment confirmed',
         variant: 'default',
-        icon: CheckCircle2,
+        icon: Zap,
       });
       break;
 
-    case 'completed':
-    case 'cancelled':
-    case 'disputed':
-    case 'expired':
-      // Terminal states — no actions
+    case 'lightning_settled':
+      // Still need the fiat leg
+      actions.push({
+        label: 'Fiat exchanged',
+        nextState: 'fiat_exchanged',
+        reason: 'Cash changed hands in person',
+        variant: 'default',
+        icon: CheckCircle2,
+      });
       break;
   }
 
-  // Allow dispute from any active state
-  if (!['completed', 'cancelled', 'disputed', 'expired', 'requested'].includes(state)) {
+  // Complete action — available when both legs are done
+  // (both fiat_exchanged and lightning_settled have been reached)
+  if (state === 'fiat_exchanged' || state === 'lightning_settled') {
+    actions.push({
+      label: 'Complete swap',
+      nextState: 'completed',
+      reason: 'Both fiat and Lightning legs settled — swap complete',
+      variant: 'default',
+      icon: CheckCircle2,
+    });
+  }
+
+  // Allow cancel from early states
+  if (['requested', 'accepted'].includes(state)) {
+    actions.push({
+      label: 'Cancel',
+      nextState: 'cancelled',
+      reason: 'Swap cancelled',
+      variant: 'destructive',
+      icon: X,
+    });
+  }
+
+  // Allow dispute from any active non-terminal state
+  if (!['completed', 'cancelled', 'disputed', 'expired'].includes(state)) {
     actions.push({
       label: 'Raise dispute',
       nextState: 'disputed',
@@ -188,18 +180,18 @@ function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
     });
   }
 
+  // Use swapType to avoid unused param warning
+  void swapType;
+
   return actions;
 }
 
 /** Ordered states for the progress visualization. */
 const STATE_FLOW: SwapState[] = [
   'requested',
-  'escrow_init',
-  'escrow_funded',
-  'fiat_pending',
-  'fiat_confirmed',
-  'payout_pending',
-  'payout_sent',
+  'accepted',
+  'fiat_exchanged',
+  'lightning_settled',
   'completed',
 ];
 
@@ -207,12 +199,9 @@ const TERMINAL_STATES: SwapState[] = ['cancelled', 'disputed', 'expired'];
 
 const STATE_LABELS: Record<SwapState, string> = {
   requested: 'Requested',
-  escrow_init: 'Escrow Init',
-  escrow_funded: 'Escrow Funded',
-  fiat_pending: 'Fiat Pending',
-  fiat_confirmed: 'Fiat Confirmed',
-  payout_pending: 'Payout Pending',
-  payout_sent: 'Payout Sent',
+  accepted: 'Accepted',
+  fiat_exchanged: 'Fiat Exchanged',
+  lightning_settled: 'Lightning Settled',
   completed: 'Completed',
   cancelled: 'Cancelled',
   disputed: 'Disputed',
@@ -221,12 +210,9 @@ const STATE_LABELS: Record<SwapState, string> = {
 
 const STATE_COLORS: Record<SwapState, string> = {
   requested: 'text-amber-600 bg-amber-500/10 border-amber-500/20',
-  escrow_init: 'text-blue-600 bg-blue-500/10 border-blue-500/20',
-  escrow_funded: 'text-blue-600 bg-blue-500/10 border-blue-500/20',
-  fiat_pending: 'text-amber-600 bg-amber-500/10 border-amber-500/20',
-  fiat_confirmed: 'text-blue-600 bg-blue-500/10 border-blue-500/20',
-  payout_pending: 'text-amber-600 bg-amber-500/10 border-amber-500/20',
-  payout_sent: 'text-green-600 bg-green-500/10 border-green-500/20',
+  accepted: 'text-blue-600 bg-blue-500/10 border-blue-500/20',
+  fiat_exchanged: 'text-blue-600 bg-blue-500/10 border-blue-500/20',
+  lightning_settled: 'text-green-600 bg-green-500/10 border-green-500/20',
   completed: 'text-green-600 bg-green-500/10 border-green-500/20',
   cancelled: 'text-red-600 bg-red-500/10 border-red-500/20',
   disputed: 'text-red-600 bg-red-500/10 border-red-500/20',
@@ -262,7 +248,6 @@ export default function AgentInboxPage() {
     );
   }
 
-  // Not registered as an agent
   if (!regLoading && !isRegistered) {
     return (
       <AppLayout>
@@ -273,7 +258,7 @@ export default function AgentInboxPage() {
           <h1 className="text-2xl font-bold">Become an Agent</h1>
           <p className="mt-3 text-muted-foreground">
             You need to register as a Pontmore agent before you can receive
-            swap requests. Register now to join the agent network.
+            swap requests.
           </p>
           <Button asChild className="mt-6">
             <Link to="/register-agent">
@@ -288,15 +273,13 @@ export default function AgentInboxPage() {
   return (
     <AppLayout>
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Header */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Agent Inbox</h1>
           <p className="mt-1 text-muted-foreground">
-            Incoming swap requests directed at you (PIP-02 state machine).
+            Incoming swap requests directed at you (in-person exchange, no escrow).
           </p>
         </div>
 
-        {/* Swap list */}
         {isLoading ? (
           <div className="space-y-3">
             {[1, 2, 3].map((i) => (
@@ -323,27 +306,19 @@ export default function AgentInboxPage() {
               <p className="text-lg font-medium">No incoming requests</p>
               <p className="mt-2 max-w-sm mx-auto text-sm text-muted-foreground">
                 When customers publish swap requests tagged to you, they'll
-                appear here. Share your agent listing so customers can find you.
+                appear here.
               </p>
-              <Button asChild variant="outline" size="sm" className="mt-4">
-                <Link to="/agents">View your listing</Link>
-              </Button>
             </CardContent>
           </Card>
         ) : (
           <div className="space-y-3">
             {incomingSwaps.map((swap) => (
-              <SwapRequestCard
-                key={swap.swapId}
-                swap={swap}
-                onClick={() => setSelectedSwap(swap)}
-              />
+              <SwapRequestCard key={swap.swapId} swap={swap} onClick={() => setSelectedSwap(swap)} />
             ))}
           </div>
         )}
       </div>
 
-      {/* Swap detail dialog */}
       <Dialog open={!!selectedSwap} onOpenChange={(open) => !open && setSelectedSwap(null)}>
         <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
@@ -354,7 +329,7 @@ export default function AgentInboxPage() {
               <span className="capitalize">{selectedSwap?.swapType} request</span>
             </DialogTitle>
             <DialogDescription>
-              Manage this swap — advance the state machine and exchange private details.
+              Manage this in-person swap — advance the state machine and exchange details.
             </DialogDescription>
           </DialogHeader>
           {selectedSwap && <SwapDetailPanel swap={selectedSwap} />}
@@ -400,8 +375,11 @@ function SwapRequestCard({ swap, onClick }: { swap: PontmoreSwap; onClick: () =>
 function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
   const { publishTransition, publishEvidence } = useSwapStateMachine();
   const { hasNip44 } = useSwapMessages();
+  const { hasWallet, payInvoice, makeInvoice, isPaying, isCreatingInvoice } = useUnifiedWallet();
   const [evidenceDialogOpen, setEvidenceDialogOpen] = useState(false);
   const [actionPending, setActionPending] = useState<SwapAction | null>(null);
+  const [payingInvoice, setPayingInvoice] = useState(false);
+  const [generatingInvoice, setGeneratingInvoice] = useState(false);
 
   const actions = useMemo(() => getAgentActions(swap.state, swap.swapType), [swap.state, swap.swapType]);
 
@@ -420,8 +398,60 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
     }
   };
 
-  const currentIndex = STATE_FLOW.indexOf(swap.state);
+  // Extract any invoice from the NIP-17 messages (for deposits, customer sends invoice)
+  const { useSwapInbox, sendMessage } = useSwapMessages();
+  const { data: messages } = useSwapInbox(swap.swapId);
+  const customerInvoice = messages?.find(
+    (m) => m.payload.type === 'invoice' && m.senderPubkey === swap.customerPubkey
+  );
+
+  // Agent pays the customer's Lightning invoice (for deposits)
+  const handlePayInvoice = async () => {
+    if (!customerInvoice) return;
+    setPayingInvoice(true);
+    try {
+      const result = await payInvoice(customerInvoice.payload.data);
+      if (result) {
+        // Mark Lightning settled
+        await publishTransition.mutateAsync({
+          swapId: swap.swapId,
+          newState: 'lightning_settled',
+          prevState: swap.state,
+          actorRole: 'agent',
+          reason: 'Agent paid customer Lightning invoice',
+        });
+      }
+    } finally {
+      setPayingInvoice(false);
+    }
+  };
+
+  // Agent generates a Lightning invoice and sends it to the customer (for withdrawals)
+  const handleGenerateAndSendInvoice = async () => {
+    if (!swap.bitcoinAmountSats) return;
+    setGeneratingInvoice(true);
+    try {
+      const result = await makeInvoice(swap.bitcoinAmountSats, `Pontmore withdrawal ${swap.swapId}`);
+      if (result) {
+        // Send the invoice to the customer via NIP-17
+        await sendMessage.mutateAsync({
+          swapId: swap.swapId,
+          recipientPubkey: swap.customerPubkey,
+          payloadType: 'invoice',
+          data: result.invoice,
+          label: `Withdrawal ${swap.bitcoinAmountSats} sats — pay this invoice`,
+        });
+      }
+    } finally {
+      setGeneratingInvoice(false);
+    }
+  };
+
   const isTerminal = TERMINAL_STATES.includes(swap.state);
+  const currentIndex = STATE_FLOW.indexOf(swap.state);
+  const hasSentInvoice = messages?.some(
+    (m) => m.payload.type === 'invoice' && m.senderPubkey === swap.agentPubkey
+  );
 
   return (
     <div className="space-y-5">
@@ -432,7 +462,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
         <DetailRow label="Customer" value={`${swap.customerPubkey.slice(0, 16)}...`} mono />
         <DetailRow label="Swap ID" value={swap.swapId} mono />
         <DetailRow label="Created" value={new Date(swap.createdAt * 1000).toLocaleString()} />
-        <DetailRow label="Escrow ref" value={swap.escrowReference.slice(0, 24) + '...'} mono />
+        <DetailRow label="Mode" value="In-person (no escrow)" />
       </div>
 
       {/* State machine progress */}
@@ -445,15 +475,11 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
               const isCurrent = i === currentIndex;
               return (
                 <div key={state} className="flex items-center gap-1 shrink-0">
-                  <div
-                    className={`flex h-7 items-center rounded-full px-2.5 text-xs font-medium transition-colors ${
-                      isCurrent
-                        ? 'bg-primary text-primary-foreground'
-                        : isPast
-                        ? 'bg-green-500/15 text-green-600'
-                        : 'bg-muted text-muted-foreground'
-                    }`}
-                  >
+                  <div className={`flex h-7 items-center rounded-full px-2.5 text-xs font-medium transition-colors ${
+                    isCurrent ? 'bg-primary text-primary-foreground'
+                    : isPast ? 'bg-green-500/15 text-green-600'
+                    : 'bg-muted text-muted-foreground'
+                  }`}>
                     {isPast && <Check className="mr-1 h-3 w-3" />}
                     {STATE_LABELS[state]}
                   </div>
@@ -471,6 +497,78 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
         )}
       </div>
 
+      {/* Lightning payment actions */}
+      {swap.state === 'accepted' && (
+        <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <p className="mb-3 text-sm font-medium flex items-center gap-2">
+            <Zap className="h-4 w-4" /> Lightning payment
+          </p>
+
+          {swap.swapType === 'deposit' && (
+            <div>
+              {customerInvoice ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Customer sent a Lightning invoice. Pay it to send BTC.
+                  </p>
+                  <code className="block truncate rounded bg-background px-2 py-1.5 text-xs">
+                    {customerInvoice.payload.data.slice(0, 50)}...
+                  </code>
+                  {hasWallet ? (
+                    <Button onClick={handlePayInvoice} disabled={payingInvoice || isPaying} size="sm" className="w-full">
+                      {payingInvoice || isPaying ? (
+                        <><Loader2 className="h-4 w-4 animate-spin" /> Paying invoice…</>
+                      ) : (
+                        <><Zap className="h-4 w-4" /> Pay invoice ({formatSats(swap.bitcoinAmountSats)})</>
+                      )}
+                    </Button>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-amber-600">
+                      <WalletIcon className="h-4 w-4" /> Connect a wallet to pay
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Waiting for the customer to send a Lightning invoice via the
+                  private lane. Ask them to generate and send one.
+                </p>
+              )}
+            </div>
+          )}
+
+          {swap.swapType === 'withdrawal' && (
+            <div>
+              {hasSentInvoice ? (
+                <p className="text-xs text-green-600 flex items-center gap-1.5">
+                  <CheckCircle2 className="h-4 w-4" /> Invoice sent to customer.
+                  Waiting for them to pay. Confirm once the Lightning payment
+                  is received.
+                </p>
+              ) : hasWallet ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Generate a Lightning invoice for the customer to pay
+                    ({formatSats(swap.bitcoinAmountSats)}).
+                  </p>
+                  <Button onClick={handleGenerateAndSendInvoice} disabled={generatingInvoice || isCreatingInvoice} size="sm" className="w-full">
+                    {generatingInvoice || isCreatingInvoice ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</>
+                    ) : (
+                      <><Zap className="h-4 w-4" /> Generate & send invoice</>
+                    )}
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-amber-600">
+                  <WalletIcon className="h-4 w-4" /> Connect a wallet to generate an invoice
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Transition log */}
       {swap.transitions.length > 0 && (
         <div>
@@ -480,7 +578,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
               <div key={i} className="flex items-start gap-2 rounded-lg bg-muted/40 p-2.5 text-xs">
                 <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <span className="font-medium">{STATE_LABELS[t.state]}</span>
+                  <span className="font-medium">{STATE_LABELS[t.state] ?? t.state}</span>
                   <span className="text-muted-foreground"> · {t.actorRole}</span>
                   <p className="text-muted-foreground">{t.reason}</p>
                 </div>
@@ -509,11 +607,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
                   onClick={() => handleAction(action)}
                   disabled={actionPending !== null}
                 >
-                  {isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Icon className="h-4 w-4" />
-                  )}
+                  {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
                   {action.label}
                 </Button>
               );
@@ -557,7 +651,6 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
         )}
       </div>
 
-      {/* Evidence dialog */}
       <EvidenceDialog
         open={evidenceDialogOpen}
         onOpenChange={setEvidenceDialogOpen}
@@ -591,7 +684,7 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
 function PrivateLane({ swap, hasNip44 }: { swap: PontmoreSwap; hasNip44: boolean }) {
   const { useSwapInbox, sendMessage } = useSwapMessages();
   const { data: messages, isLoading } = useSwapInbox(swap.swapId);
-  const [sendType, setSendType] = useState<SwapPayloadType>('payment_proof');
+  const [sendType, setSendType] = useState<SwapPayloadType>('message');
   const [sendData, setSendData] = useState('');
   const [sending, setSending] = useState(false);
 
@@ -621,8 +714,7 @@ function PrivateLane({ swap, hasNip44 }: { swap: PontmoreSwap; hasNip44: boolean
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
           <p className="text-amber-600">
             Your signer doesn't support NIP-44 encryption. Upgrade your Nostr
-            signer (browser extension or nsec login) to use the encrypted
-            private message lane for exchanging invoices and payment details.
+            signer to use the encrypted private message lane.
           </p>
         </div>
       </div>
@@ -630,10 +722,10 @@ function PrivateLane({ swap, hasNip44 }: { swap: PontmoreSwap; hasNip44: boolean
   }
 
   const payloadTypeOptions: { value: SwapPayloadType; label: string }[] = [
+    { value: 'message', label: 'Message' },
     { value: 'payment_proof', label: 'Payment proof' },
     { value: 'payout_confirmation', label: 'Payout confirmation' },
     { value: 'invoice', label: 'Lightning invoice' },
-    { value: 'message', label: 'Message' },
   ];
 
   return (
@@ -645,14 +737,13 @@ function PrivateLane({ swap, hasNip44 }: { swap: PontmoreSwap; hasNip44: boolean
         </Badge>
       </p>
 
-      {/* Received messages */}
       <div className="mb-3 max-h-48 space-y-1.5 overflow-y-auto">
         {isLoading ? (
           <Skeleton className="h-16 w-full" />
         ) : !messages || messages.length === 0 ? (
           <p className="rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
             No private messages yet. Customers may send Lightning invoices or
-            bank details here after you accept the swap.
+            payment instructions here.
           </p>
         ) : (
           messages.map((msg) => (
@@ -661,7 +752,6 @@ function PrivateLane({ swap, hasNip44 }: { swap: PontmoreSwap; hasNip44: boolean
         )}
       </div>
 
-      {/* Send message */}
       <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
         <div className="flex flex-wrap gap-1.5">
           {payloadTypeOptions.map((opt) => (
@@ -669,9 +759,7 @@ function PrivateLane({ swap, hasNip44 }: { swap: PontmoreSwap; hasNip44: boolean
               key={opt.value}
               onClick={() => setSendType(opt.value)}
               className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                sendType === opt.value
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground hover:text-foreground'
+                sendType === opt.value ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'
               }`}
             >
               {opt.label}
@@ -680,23 +768,16 @@ function PrivateLane({ swap, hasNip44 }: { swap: PontmoreSwap; hasNip44: boolean
         </div>
         <Textarea
           placeholder={
-            sendType === 'invoice'
-              ? 'Paste Lightning invoice (lnbc...)...'
-              : sendType === 'payment_proof'
-              ? 'Payment proof (preimage, tx hash, receipt number)...'
-              : 'Enter details to send encrypted to the customer...'
+            sendType === 'invoice' ? 'Paste Lightning invoice (lnbc...)...'
+            : sendType === 'payment_proof' ? 'Payment proof (preimage, receipt)...'
+            : 'Enter message to send encrypted to the customer...'
           }
           value={sendData}
           onChange={(e) => setSendData(e.target.value)}
           rows={2}
           className="text-sm"
         />
-        <Button
-          size="sm"
-          onClick={handleSend}
-          disabled={sending || !sendData.trim()}
-          className="w-full"
-        >
+        <Button size="sm" onClick={handleSend} disabled={sending || !sendData.trim()} className="w-full">
           {sending ? (
             <><Loader2 className="h-4 w-4 animate-spin" /> Encrypting & sending…</>
           ) : (
@@ -708,10 +789,10 @@ function PrivateLane({ swap, hasNip44 }: { swap: PontmoreSwap; hasNip44: boolean
   );
 }
 
-function MessageBubble({ message, isOwn }: { message: import('@/hooks/useSwapMessages').SwapMessage; isOwn: boolean }) {
+function MessageBubble({ message, isOwn }: { message: SwapMessage; isOwn: boolean }) {
   const typeLabels: Record<SwapPayloadType, string> = {
     invoice: 'Lightning Invoice',
-    bank_details: 'Bank Details',
+    bank_details: 'Payment Instructions',
     payout_confirmation: 'Payout Confirmation',
     payment_proof: 'Payment Proof',
     message: 'Message',
@@ -719,9 +800,7 @@ function MessageBubble({ message, isOwn }: { message: import('@/hooks/useSwapMes
 
   return (
     <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[85%] rounded-lg p-2.5 text-xs ${
-        isOwn ? 'bg-primary/10' : 'bg-muted/60'
-      }`}>
+      <div className={`max-w-[85%] rounded-lg p-2.5 text-xs ${isOwn ? 'bg-primary/10' : 'bg-muted/60'}`}>
         <div className="mb-0.5 flex items-center gap-1.5">
           <Badge variant="secondary" className="text-[10px] py-0">
             {typeLabels[message.payload.type]}
@@ -764,7 +843,7 @@ function EvidenceDialog({
     'payout_proof',
     'fiat_transfer_proof',
     'lightning_preimage',
-    'bank_transaction_ref',
+    'cash_receipt',
     'other',
   ];
 
@@ -796,9 +875,7 @@ function EvidenceDialog({
                   key={t}
                   onClick={() => setType(t)}
                   className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                    type === t
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted text-muted-foreground hover:text-foreground'
+                    type === t ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'
                   }`}
                 >
                   {t.replace(/_/g, ' ')}
@@ -808,34 +885,19 @@ function EvidenceDialog({
           </div>
           <div>
             <Label htmlFor="evidence-ref">Reference</Label>
-            <Input
-              id="evidence-ref"
-              placeholder="e.g. tx hash, preimage, receipt number"
-              value={reference}
-              onChange={(e) => setReference(e.target.value)}
-            />
+            <Input id="evidence-ref" placeholder="e.g. tx hash, preimage, receipt number" value={reference} onChange={(e) => setReference(e.target.value)} />
           </div>
           <div>
             <Label htmlFor="evidence-desc">Description (optional)</Label>
-            <Input
-              id="evidence-desc"
-              placeholder="Brief context for this evidence"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
+            <Input id="evidence-desc" placeholder="Brief context for this evidence" value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
         </div>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isPublishing}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={handlePublish}
-            disabled={isPublishing || !reference.trim()}
-          >
+          <AlertDialogAction onClick={handlePublish} disabled={isPublishing || !reference.trim()}>
             {isPublishing ? (
               <><Loader2 className="h-4 w-4 animate-spin" /> Publishing…</>
-            ) : (
-              'Publish evidence'
-            )}
+            ) : 'Publish evidence'}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -118,19 +118,24 @@ export interface PontmoreEscrow {
 /** Swap types supported by the Pontmore protocol. */
 export type SwapType = 'deposit' | 'withdrawal' | 'transfer';
 
-/** Swap state lifecycle per PIP-02. */
+/**
+ * Swap state lifecycle for in-person agent network (no escrow).
+ *
+ * Deposit (fiat → BTC):  requested → accepted → fiat_exchanged → lightning_settled → completed
+ * Withdrawal (BTC → fiat): requested → accepted → lightning_settled → fiat_exchanged → completed
+ *
+ * Both fiat_exchanged and lightning_settled must occur before completed.
+ * The order depends on the swap type but either can happen first in practice.
+ */
 export type SwapState =
-  | 'requested'
-  | 'escrow_init'
-  | 'escrow_funded'
-  | 'fiat_pending'
-  | 'fiat_confirmed'
-  | 'payout_pending'
-  | 'payout_sent'
-  | 'completed'
-  | 'cancelled'
-  | 'disputed'
-  | 'expired';
+  | 'requested'          // swap request published
+  | 'accepted'           // agent accepted, meeting arranged
+  | 'fiat_exchanged'     // cash changed hands in person
+  | 'lightning_settled'  // Lightning payment confirmed
+  | 'completed'          // swap fully completed
+  | 'cancelled'          // swap cancelled
+  | 'disputed'           // dispute raised
+  | 'expired';           // swap expired
 
 /** Immutable swap request content (kind 7300, PIP-02). */
 export interface SwapRequestContent {
@@ -157,7 +162,7 @@ export interface SwapTransitionContent {
   swap_id: string;
   state: SwapState;
   prev_state: SwapState;
-  actor_role: 'agent' | 'customer' | 'escrow_operator' | 'system';
+  actor_role: 'agent' | 'customer' | 'system';
   reason: string;
   created_at: number;
 }

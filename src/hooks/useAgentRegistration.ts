@@ -21,11 +21,9 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useAppContext } from '@/hooks/useAppContext';
 import { useToast } from '@/hooks/useToast';
-import { useEscrowDescriptor, type EscrowDescriptorInput } from '@/hooks/useEscrowDescriptor';
 import {
   PONTMORE_AGENT_KIND,
   PONTMORE_AGENT_TAG,
-  PONTMORE_ESCROW_KIND,
   parsePontmoreAgent,
   type PontmoreAgent,
   type AgentCapabilities,
@@ -43,8 +41,6 @@ export interface AgentRegistrationInput {
   capabilities: AgentCapabilities;
   /** Pricing or margin policy reference. */
   pricingPolicy: string;
-  /** Escrow configuration (PIP-01). */
-  escrow: EscrowDescriptorInput;
   /** Supported fiat currencies (emitted as `f` tags). */
   fiatCurrencies: string[];
   /** Relay URLs the agent is reachable on (emitted as `relay` tags). */
@@ -68,13 +64,13 @@ function buildAgentContent(input: AgentRegistrationInput): string {
       pricing_margin: input.capabilities.pricingMargin,
     },
     pricing_policy: input.pricingPolicy,
-    escrow: input.escrow.escrowType,
+    exchange_mode: 'in_person',
     updated_at: Math.floor(Date.now() / 1000),
   });
 }
 
 /** Build the tag array for a kind 30360 event (PIP-00). */
-function buildAgentTags(input: AgentRegistrationInput, pubkey: string): string[][] {
+function buildAgentTags(input: AgentRegistrationInput): string[][] {
   const tags: string[][] = [
     ['d', input.identifier || 'agent'],
     ['t', PONTMORE_AGENT_TAG],
@@ -85,10 +81,6 @@ function buildAgentTags(input: AgentRegistrationInput, pubkey: string): string[]
   for (const relay of input.relays) {
     tags.push(['relay', relay]);
   }
-
-  // Escrow descriptor reference (a-tag: kind:pubkey:d)
-  const escrowCoord = `${PONTMORE_ESCROW_KIND}:${pubkey}:${input.escrow.identifier || 'default'}`;
-  tags.push(['a', escrowCoord]);
 
   // Fiat currency tags (PIP-00 recommended)
   for (const currency of input.fiatCurrencies) {
@@ -105,7 +97,6 @@ export function useAgentRegistration() {
   const { mutateAsync: publishEvent } = useNostrPublish();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { publishEscrow } = useEscrowDescriptor();
 
   const myPubkey = user?.pubkey;
 
@@ -134,17 +125,14 @@ export function useAgentRegistration() {
     staleTime: 30_000,
   });
 
-  /** Publish (create or update) agent definition + escrow descriptor. */
+  /** Publish (create or update) agent definition. */
   const publishRegistration = useMutation({
     mutationFn: async (input: AgentRegistrationInput) => {
       if (!myPubkey) throw new Error('Not logged in');
 
-      // 1. Publish the escrow descriptor first (PIP-01)
-      await publishEscrow.mutateAsync(input.escrow);
-
-      // 2. Publish the agent definition (PIP-00)
+      // Publish the agent definition (PIP-00)
       const content = buildAgentContent(input);
-      const tags = buildAgentTags(input, myPubkey);
+      const tags = buildAgentTags(input);
 
       const event = await publishEvent({
         kind: PONTMORE_AGENT_KIND,
@@ -209,10 +197,6 @@ export function useAgentRegistration() {
   /** Convert a PontmoreAgent back into form input for editing. */
   const agentToInput = useCallback(
     (agent: PontmoreAgent): AgentRegistrationInput => {
-      // Parse the escrow reference to get the d-identifier
-      const escrowParts = agent.escrowRef.split(':');
-      const escrowD = escrowParts[2] ?? 'default';
-
       return {
         identifier: agent.d,
         name: agent.name,
@@ -221,17 +205,6 @@ export function useAgentRegistration() {
         pricingPolicy: agent.pricingPolicy,
         fiatCurrencies: agent.fiatCurrencies,
         relays: agent.relays,
-        escrow: {
-          identifier: escrowD,
-          escrowType: agent.escrowSummary || 'lightning_hold_invoice',
-          networks: ['bitcoin', 'lightning'],
-          fundingRules: { required_confirmation: 'invoice_held' },
-          releaseRules: { release_trigger: 'counterparty_fiat_payment_confirmed' },
-          disputeRules: { policy: 'operator_resolved' },
-          referenceFormat: 'bolt11',
-          invoiceNetwork: 'lightning',
-          payoutNetwork: 'lightning',
-        },
       };
     },
     [],
