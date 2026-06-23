@@ -294,3 +294,106 @@ export async function pollInvoiceStatus(
     poll();
   });
 }
+
+// ─── Lightning Address (LNURL-pay) Payout ───────────────────────
+
+export interface LightningAddressPayoutResult {
+  bolt11: string;
+  paymentHash: string;
+  amountSats: number;
+  description: string;
+}
+
+/**
+ * Resolve a Lightning address (e.g. user@blink.sv) to a BOLT11 invoice
+ * via LNURL-pay. This is used for payouts when the local agent or user
+ * has provided a Lightning address as their payout method.
+ *
+ * The Super Agent (or the app) fetches an invoice from the LNURL endpoint
+ * and then pays it via BTCPay Server or the user's connected wallet.
+ */
+export async function fetchInvoiceFromLightningAddress(
+  lightningAddress: string,
+  amountSats: number,
+  comment?: string,
+): Promise<LightningAddressPayoutResult> {
+  const [user, domain] = lightningAddress.split('@');
+  if (!user || !domain) {
+    throw new Error('Invalid Lightning address format. Expected user@domain');
+  }
+
+  // Step 1: Resolve the Lightning address to an LNURL-pay endpoint
+  // Try the standard .well-known/lnurlp endpoint first
+  const lnurlpUrl = `https://${domain}/.well-known/lnurlp/${user}`;
+  const response = await fetch(proxied(lnurlpUrl));
+
+  if (!response.ok) {
+    throw new Error(`Could not resolve Lightning address ${lightningAddress}`);
+  }
+
+  const lnurlpData = await response.json();
+
+  if (!lnurlpData.callback) {
+    throw new Error('LNURL-pay endpoint did not return a callback URL');
+  }
+
+  // Step 2: Request an invoice from the callback URL
+  const amountMsats = amountSats * 1000;
+  const callbackUrl = new URL(lnurlpData.callback);
+  callbackUrl.searchParams.set('amount', amountMsats.toString());
+  if (comment) {
+    callbackUrl.searchParams.set('comment', comment);
+  }
+
+  const invoiceResponse = await fetch(proxied(callbackUrl.toString()));
+  if (!invoiceResponse.ok) {
+    throw new Error('Failed to fetch invoice from Lightning address');
+  }
+
+  const invoiceData = await invoiceResponse.json();
+
+  if (!invoiceData.pr) {
+    throw new Error('Lightning address did not return a valid invoice');
+  }
+
+  return {
+    bolt11: invoiceData.pr,
+    paymentHash: invoiceData.paymentHash ?? '',
+    amountSats,
+    description: comment ?? `Payout to ${lightningAddress}`,
+  };
+}
+
+/**
+ * Pay a Lightning address directly via BTCPay Server.
+ * Creates an internal invoice on the BTCPay store and uses the
+ * server's Lightning node to pay the LNURL invoice.
+ *
+ * This is a Super Agent operation — the server pays the payout
+ * from its own liquidity.
+ */
+export async function payLightningAddressViaBtcPay(
+  config: BtcPayConfig,
+  lightningAddress: string,
+  amountSats: number,
+  comment?: string,
+): Promise<{ bolt11: string; invoiceId: string }> {
+  // Fetch the invoice from the Lightning address
+  const payout = await fetchInvoiceFromLightningAddress(
+    lightningAddress,
+    amountSats,
+    comment,
+  );
+
+  // Create a BTCPay invoice to track the payout
+  const invoice = await createInvoice(config, {
+    amount: amountSats,
+    currency: 'SATS',
+    description: `Payout to ${lightningAddress}`,
+  });
+
+  return {
+    bolt11: payout.bolt11,
+    invoiceId: invoice.id,
+  };
+}

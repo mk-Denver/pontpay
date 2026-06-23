@@ -45,6 +45,8 @@ export default function SuperAgentPage() {
     removeLocalAgentStore,
     isCreatingStore,
     isGeneratingKey,
+    payoutConfig,
+    updatePayoutConfig,
   } = useSuperAgent();
 
   // Super Agent setup form
@@ -57,6 +59,11 @@ export default function SuperAgentPage() {
   const [localApiKey, setLocalApiKey] = useState('');
   const [localStoreId, setLocalStoreId] = useState('');
   const [superAgentPubkey, setSuperAgentPubkey] = useState('');
+
+  // Payout config form
+  const [payoutMethod, setPayoutMethod] = useState<'lightning_address' | 'nwc' | 'cashu'>('lightning_address');
+  const [lightningAddress, setLightningAddress] = useState('');
+  const [nwcUri, setNwcUri] = useState('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   useSeoMeta({
@@ -96,6 +103,11 @@ export default function SuperAgentPage() {
 
   const handleLocalAgentConnect = () => {
     if (!localServerUrl.trim() || !localApiKey.trim() || !localStoreId.trim()) return;
+    const payout = lightningAddress.trim()
+      ? { method: 'lightning_address' as const, lightningAddress: lightningAddress.trim() }
+      : nwcUri.trim()
+      ? { method: 'nwc' as const, nwcConnectionString: nwcUri.trim() }
+      : undefined;
     setRole('local');
     connectToSuperAgent({
       serverUrl: localServerUrl.trim(),
@@ -103,6 +115,17 @@ export default function SuperAgentPage() {
       storeId: localStoreId.trim(),
       superAgentPubkey: superAgentPubkey.trim() || undefined,
       storeName: 'Local Agent Store',
+      payout,
+    });
+  };
+
+  const handleUpdatePayout = () => {
+    if (payoutMethod === 'lightning_address' && !lightningAddress.trim()) return;
+    if (payoutMethod === 'nwc' && !nwcUri.trim()) return;
+    updatePayoutConfig({
+      method: payoutMethod,
+      lightningAddress: payoutMethod === 'lightning_address' ? lightningAddress.trim() : undefined,
+      nwcConnectionString: payoutMethod === 'nwc' ? nwcUri.trim() : undefined,
     });
   };
 
@@ -288,6 +311,68 @@ export default function SuperAgentPage() {
                       Used to declare the Super Agent as custody/release/refund authority in your PIP-01 escrow descriptor.
                     </p>
                   </div>
+
+                  <Separator />
+
+                  {/* Payout method selection */}
+                  <div className="space-y-3">
+                    <Label className="text-sm font-medium">Your wallet / payout method</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Where should Bitcoin be sent when a swap settles? You can use a Lightning address, connect an NWC wallet, or use your Cashu ecash wallet.
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPayoutMethod('lightning_address')}
+                        className={`rounded-lg border p-2.5 text-center text-xs font-medium transition-all ${payoutMethod === 'lightning_address' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'}`}
+                      >
+                        <Zap className="mx-auto mb-1 h-4 w-4" />
+                        Lightning Address
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPayoutMethod('nwc')}
+                        className={`rounded-lg border p-2.5 text-center text-xs font-medium transition-all ${payoutMethod === 'nwc' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'}`}
+                      >
+                        <Server className="mx-auto mb-1 h-4 w-4" />
+                        NWC Wallet
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPayoutMethod('cashu')}
+                        className={`rounded-lg border p-2.5 text-center text-xs font-medium transition-all ${payoutMethod === 'cashu' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'}`}
+                      >
+                        <Coins className="mx-auto mb-1 h-4 w-4" />
+                        Cashu Wallet
+                      </button>
+                    </div>
+
+                    {payoutMethod === 'lightning_address' && (
+                      <div>
+                        <Label htmlFor="ln-address">Your Lightning address</Label>
+                        <Input id="ln-address" placeholder="user@blink.sv" value={lightningAddress} onChange={(e) => setLightningAddress(e.target.value)} />
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Enter your Lightning address (LNURL). Bitcoin will be sent here when swaps settle.
+                        </p>
+                      </div>
+                    )}
+                    {payoutMethod === 'nwc' && (
+                      <div>
+                        <Label htmlFor="nwc-uri">NWC connection URI</Label>
+                        <Input id="nwc-uri" type="password" placeholder="nostr+walletconnect://..." value={nwcUri} onChange={(e) => setNwcUri(e.target.value)} />
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Paste your Nostr Wallet Connect URI. Must support <code className="rounded bg-muted px-1">makeInvoice</code>.
+                        </p>
+                      </div>
+                    )}
+                    {payoutMethod === 'cashu' && (
+                      <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+                        <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-green-500" /> Your Cashu ecash wallet will be used.</p>
+                        <p className="mt-1 text-xs">Make sure you have a Cashu wallet set up in the <Link to="/wallet" className="underline">Wallet page</Link>.</p>
+                      </div>
+                    )}
+                  </div>
+
                   <Button onClick={handleLocalAgentConnect} disabled={!localServerUrl.trim() || !localApiKey.trim() || !localStoreId.trim()} className="w-full">
                     <Zap className="h-4 w-4" /> Connect to Super Agent
                   </Button>
@@ -403,6 +488,76 @@ export default function SuperAgentPage() {
                     <code className="font-mono text-xs">{connection.superAgentPubkey.slice(0, 20)}...</code>
                   </div>
                 )}
+              </CardContent>
+            </Card>
+
+            {/* Payout method status */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base"><Coins className="h-5 w-5 text-orange-600" /> Payout Method</CardTitle>
+                <CardDescription>Where your Bitcoin is sent when swaps settle.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {payoutConfig ? (
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div className="flex items-center gap-2">
+                      {payoutConfig.method === 'lightning_address' && <Zap className="h-4 w-4 text-amber-500" />}
+                      {payoutConfig.method === 'nwc' && <Server className="h-4 w-4 text-blue-500" />}
+                      {payoutConfig.method === 'cashu' && <Coins className="h-4 w-4 text-orange-600" />}
+                      <div>
+                        <p className="text-sm font-medium capitalize">
+                          {payoutConfig.method.replace(/_/g, ' ')}
+                        </p>
+                        {payoutConfig.lightningAddress && (
+                          <p className="text-xs text-muted-foreground">{payoutConfig.lightningAddress}</p>
+                        )}
+                        {payoutConfig.nwcConnectionString && (
+                          <p className="text-xs text-muted-foreground">NWC wallet connected</p>
+                        )}
+                        {payoutConfig.method === 'cashu' && (
+                          <p className="text-xs text-muted-foreground">Cashu ecash wallet</p>
+                        )}
+                      </div>
+                    </div>
+                    <Badge className="bg-green-500/10 text-green-600 border-green-500/20">
+                      <CheckCircle2 className="mr-1 h-3 w-3" /> Active
+                    </Badge>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No payout method configured. Set one below.</p>
+                )}
+
+                {/* Update payout method */}
+                <Separator />
+                <div className="space-y-2">
+                  <Label className="text-xs">Update payout method</Label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button type="button" onClick={() => setPayoutMethod('lightning_address')}
+                      className={`rounded-lg border p-2 text-center text-xs font-medium transition-all ${payoutMethod === 'lightning_address' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'}`}>
+                      <Zap className="mx-auto mb-0.5 h-3.5 w-3.5" /> LN Address
+                    </button>
+                    <button type="button" onClick={() => setPayoutMethod('nwc')}
+                      className={`rounded-lg border p-2 text-center text-xs font-medium transition-all ${payoutMethod === 'nwc' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'}`}>
+                      <Server className="mx-auto mb-0.5 h-3.5 w-3.5" /> NWC
+                    </button>
+                    <button type="button" onClick={() => setPayoutMethod('cashu')}
+                      className={`rounded-lg border p-2 text-center text-xs font-medium transition-all ${payoutMethod === 'cashu' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'}`}>
+                      <Coins className="mx-auto mb-0.5 h-3.5 w-3.5" /> Cashu
+                    </button>
+                  </div>
+                  {payoutMethod === 'lightning_address' && (
+                    <Input placeholder="user@blink.sv" value={lightningAddress} onChange={(e) => setLightningAddress(e.target.value)} className="text-sm" />
+                  )}
+                  {payoutMethod === 'nwc' && (
+                    <Input type="password" placeholder="nostr+walletconnect://..." value={nwcUri} onChange={(e) => setNwcUri(e.target.value)} className="text-sm" />
+                  )}
+                  {payoutMethod === 'cashu' && (
+                    <p className="text-xs text-muted-foreground">Uses your Cashu wallet from the <Link to="/wallet" className="underline">Wallet page</Link>.</p>
+                  )}
+                  <Button size="sm" variant="outline" onClick={handleUpdatePayout} className="w-full">
+                    Update payout method
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 

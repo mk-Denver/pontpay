@@ -313,7 +313,7 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const { hasWallet, makeInvoice } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
   const { sendMessage, hasNip44 } = useSwapMessages();
-  const { isConnected: isBtcPayConnected, createHoldInvoice, superAgentPubkey } = useSuperAgent();
+  const { isConnected: isBtcPayConnected, createHoldInvoice, superAgentPubkey, payoutConfig } = useSuperAgent();
   const [selectedAgentPubkey, setSelectedAgentPubkey] = useState(preselectedAgent ?? '');
   const selectedAgent = agents.find((a) => a.event.pubkey === selectedAgentPubkey);
   const [amountSats, setAmountSats] = useState('');
@@ -375,6 +375,16 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
             label: `Deposit ${sats} sats`,
           });
         }
+        // Send payout destination (Lightning address or wallet info)
+        if (payoutConfig?.lightningAddress) {
+          await sendMessage.mutateAsync({
+            swapId,
+            recipientPubkey: selectedAgentPubkey,
+            payloadType: 'payout',
+            data: `Lightning Address: ${payoutConfig.lightningAddress}`,
+            label: 'Payout destination',
+          });
+        }
         const customerDetails = [
           phoneNumber ? `Phone: ${phoneNumber}` : '',
           memo ? `Note: ${memo}` : '',
@@ -388,7 +398,9 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
             label: 'Customer details',
           });
         }
-        setStatusMsg('Deposit request sent! Visit the agent kiosk, hand over cash, and the agent will send BTC to your wallet.');
+        setStatusMsg(payoutConfig?.lightningAddress
+          ? 'Deposit request sent! The agent will send BTC to your Lightning address.'
+          : 'Deposit request sent! Visit the agent kiosk, hand over cash, and the agent will send BTC to your wallet.');
       } else {
         setStatusMsg('Swap request published. Visit the agent kiosk to complete your deposit.');
       }
@@ -412,7 +424,14 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
           <div className="flex-1 text-sm">
             <p className="font-medium text-blue-600">BTCPay escrow active</p>
             <p className="text-xs text-muted-foreground">
-              Hold invoices generated via Super Agent&apos;s BTCPay Server. {superAgentPubkey ? `Authority: ${superAgentPubkey.slice(0, 16)}...` : ''}
+              {payoutConfig?.lightningAddress
+                ? `Payouts to ${payoutConfig.lightningAddress}`
+                : payoutConfig?.method === 'cashu'
+                ? 'Payouts to Cashu wallet'
+                : payoutConfig?.method === 'nwc'
+                ? 'Payouts to NWC wallet'
+                : 'No payout method set'}
+              {superAgentPubkey ? ` · Authority: ${superAgentPubkey.slice(0, 16)}...` : ''}
             </p>
           </div>
           <Link to="/super-agent"><Button variant="outline" size="sm">Configure</Button></Link>

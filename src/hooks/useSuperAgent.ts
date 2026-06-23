@@ -32,6 +32,18 @@ import {
 
 export type AgentRole = 'super' | 'local' | null;
 
+/** How a user or local agent receives their Bitcoin payout. */
+export type PayoutMethod = 'lightning_address' | 'nwc' | 'cashu';
+
+/** Persisted payout configuration. */
+export interface PayoutConfig {
+  method: PayoutMethod;
+  /** Lightning address (e.g. user@blink.sv) for lightning_address method. */
+  lightningAddress?: string;
+  /** NWC connection string for nwc method. */
+  nwcConnectionString?: string;
+}
+
 /** Persisted BTCPay connection config. */
 export interface BtcPayConnection {
   serverUrl: string;
@@ -43,6 +55,8 @@ export interface BtcPayConnection {
   storeName?: string;
   /** API key label (for local agents, set by super agent). */
   apiKeyLabel?: string;
+  /** How this local agent receives Bitcoin payouts. */
+  payout?: PayoutConfig;
 }
 
 /** A store created by the super agent for a local agent. */
@@ -166,6 +180,7 @@ export function useSuperAgent() {
       storeId: string;
       superAgentPubkey?: string;
       storeName?: string;
+      payout?: PayoutConfig;
     }) => {
       const conn: BtcPayConnection = {
         serverUrl: params.serverUrl,
@@ -173,6 +188,7 @@ export function useSuperAgent() {
         storeId: params.storeId,
         superAgentPubkey: params.superAgentPubkey,
         storeName: params.storeName,
+        payout: params.payout,
       };
       setConnection(conn);
       setRole('local');
@@ -182,6 +198,22 @@ export function useSuperAgent() {
       });
     },
     [setConnection, setRole, toast],
+  );
+
+  /** Update payout configuration for the current connection. */
+  const updatePayoutConfig = useCallback(
+    (payout: PayoutConfig) => {
+      setConnection((prev) => prev ? { ...prev, payout } : prev);
+      toast({
+        title: 'Payout method updated',
+        description: payout.method === 'lightning_address'
+          ? `Settlements will go to ${payout.lightningAddress}`
+          : payout.method === 'nwc'
+          ? 'Settlements will go to your NWC wallet'
+          : 'Settlements will go to your Cashu wallet',
+      });
+    },
+    [setConnection, toast],
   );
 
   /** Disconnect from the Super Agent's server. */
@@ -361,6 +393,10 @@ export function useSuperAgent() {
     isConnected: !!btcPayConfig,
     connectToSuperAgent,
     disconnect,
+
+    // Payout configuration
+    payoutConfig: connection?.payout ?? null,
+    updatePayoutConfig,
 
     // Super Agent: store management
     localAgentStores,
