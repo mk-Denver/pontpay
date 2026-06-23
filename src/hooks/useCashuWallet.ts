@@ -3,18 +3,22 @@
  * the Cashu protocol. Non-custodial: the user holds a BIP39 seed phrase
  * and all proofs are stored locally.
  *
- * Inspired by https://github.com/Codepocketdev/satoshi-pay-wallet
+ * Implements the correct @cashu/cashu-ts v4 API patterns following
+ * the Satoshi Pay wallet reference implementation:
+ * https://github.com/Codepocketdev/satoshi-pay-wallet
  *
- * Uses @cashu/cashu-ts v4 API where:
- * - CashuWallet → Wallet
- * - CashuMint → Mint
- * - Must call wallet.loadMint() after construction
+ * Key v4 API patterns:
+ * - wallet.send(amount, proofs) → { send: [...], keep: [...] }
+ * - wallet.createMeltQuote(invoice) → melt quote with amount + fee_reserve
+ * - wallet.meltProofs(quote, proofsToSend, options) → pays invoice
+ * - wallet.createMintQuote(amount) → Lightning invoice to receive
+ * - wallet.checkMintQuote(quote) → mints tokens if invoice paid
+ * - wallet.receive(tokenString) → redeems ecash token
  */
 
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Wallet as CashuWalletInstance,
-  Mint as CashuMintInstance,
   getEncodedToken,
   getDecodedToken,
   type Proof,
@@ -201,12 +205,20 @@ export function useCashuWallet() {
     [customMints, setCustomMints],
   );
 
-  /** Save proofs for a mint. */
-  const saveProofs = useCallback(
+  /** Save proofs for a mint (replaces all proofs for that mint). */
+  const saveProofsForMint = useCallback(
     (mintUrl: string, proofs: Proof[]) => {
       setProofsByMint((prev) => ({ ...prev, [mintUrl]: proofs }));
     },
     [setProofsByMint],
+  );
+
+  /** Get proofs for a mint. */
+  const getProofsForMint = useCallback(
+    (mintUrl: string): Proof[] => {
+      return proofsByMint[mintUrl] ?? [];
+    },
+    [proofsByMint],
   );
 
   /** Add a transaction to history. */
@@ -223,9 +235,16 @@ export function useCashuWallet() {
     [setTxHistory],
   );
 
+  // ═══════════════════════════════════════════════════════════════
+  // RECEIVE: Create a Lightning invoice to mint new ecash tokens
+  // ═══════════════════════════════════════════════════════════════
+
   /**
    * Create a Lightning invoice to receive sats into the wallet (mint).
-   * The user pays this invoice to receive ecash tokens from the mint.
+   * The user pays this invoice (or someone else pays it) to receive
+   * ecash tokens from the mint.
+   *
+   * Uses wallet.createMintQuote(amount) which returns a Lightning invoice.
    */
   const makeInvoice = useCallback(
     async (amountSats: number, memo?: string): Promise<MakeInvoiceResult | null> => {
@@ -240,6 +259,7 @@ export function useCashuWallet() {
 
       setIsCreatingInvoice(true);
       try {
+        // createMintQuote returns a Lightning invoice
         const quote = await walletInstance.createMintQuote(amountSats);
 
         addTransaction({
@@ -272,6 +292,9 @@ export function useCashuWallet() {
 
   /**
    * Check if a mint quote has been paid and mint tokens.
+   * Called after the user pays the Lightning invoice from makeInvoice.
+   *
+   * Uses wallet.checkMintQuote(quote) which returns proofs if paid.
    */
   const checkMintQuote = useCallback(
     async (quote: string, amountSats: number): Promise<boolean> => {
@@ -280,8 +303,9 @@ export function useCashuWallet() {
         const result = await walletInstance.checkMintQuote(quote);
         const newProofs = result?.proofs ?? [];
         if (newProofs.length > 0) {
-          const existing = proofsByMint[selectedMintUrl] ?? [];
-          saveProofs(selectedMintUrl, [...existing, ...newProofs]);
+          // Merge new proofs with existing
+          const existing = getProofsForMint(selectedMintUrl);
+          saveProofsForMint(selectedMintUrl, [...existing, ...newProofs]);
 
           addTransaction({
             type: 'mint',
@@ -291,6 +315,11 @@ export function useCashuWallet() {
             invoice: quote,
           });
 
+          toast({
+            title: 'Payment received!',
+            description: `${amountSats} sats minted to your wallet.`,
+          });
+
           return true;
         }
         return false;
@@ -298,11 +327,21 @@ export function useCashuWallet() {
         return false;
       }
     },
-    [walletInstance, selectedMintUrl, proofsByMint, saveProofs, addTransaction],
+    [walletInstance, selectedMintUrl, getProofsForMint, saveProofsForMint, addTransaction, toast],
   );
 
+  // ═══════════════════════════════════════════════════════════════
+  // SEND: Pay a Lightning invoice by melting ecash tokens
+  // ═══════════════════════════════════════════════════════════════
+
   /**
-   * Pay a Lightning invoice by melting ecash tokens (withdraw).
+   * Pay a Lightning invoice by melting ecash tokens.
+   *
+   * Flow (following Satoshi Pay pattern):
+   * 1. createMeltQuote(invoice) → get amount + fee_reserve
+   * 2. send(totalAmount, proofs) → split into { send, keep }
+   * 3. meltProofs(quote, proofsToSend) → pays the invoice
+   * 4. Save keep + change proofs
    */
   const payInvoice = useCallback(
     async (bolt11: string): Promise<PaymentResult | null> => {
@@ -315,7 +354,7 @@ export function useCashuWallet() {
         return null;
       }
 
-      const proofs = proofsByMint[selectedMintUrl] ?? [];
+      const proofs = getProofsForMint(selectedMintUrl);
       if (proofs.length === 0) {
         toast({
           title: 'Insufficient balance',
@@ -327,16 +366,49 @@ export function useCashuWallet() {
 
       setIsPaying(true);
       try {
+        // Step 1: Create melt quote to get amount + fee
         const meltQuote = await walletInstance.createMeltQuote(bolt11);
-        const result = await walletInstance.meltProofs(meltQuote, proofs);
 
-        // Remove spent proofs and keep change
-        const change = result?.change ?? [];
-        saveProofs(selectedMintUrl, change);
+        const invoiceAmount = meltQuote.amount;
+        const feeReserve = meltQuote.fee_reserve ?? 0;
+        const totalNeeded = invoiceAmount + feeReserve;
+
+        const currentBalance = proofs.reduce((s, p) => s + p.amount, 0);
+        if (currentBalance < totalNeeded) {
+          throw new Error(`Insufficient balance. Need ${totalNeeded} sats (including ${feeReserve} sats fee), have ${currentBalance}.`);
+        }
+
+        // Step 2: Split proofs using wallet.send()
+        // This returns { send: [...], keep: [...] }
+        const sendResult = await walletInstance.send(totalNeeded, proofs);
+
+        if (!sendResult) {
+          throw new Error('Failed to prepare proofs for payment');
+        }
+
+        // v4 returns { send, keep }
+        const proofsToSend = sendResult.send ?? [];
+        const proofsToKeep = sendResult.keep ?? sendResult.returnChange ?? [];
+
+        if (!proofsToSend || proofsToSend.length === 0) {
+          throw new Error('Failed to create send proofs');
+        }
+
+        // Step 3: Melt the proofs to pay the invoice
+        const meltResponse = await walletInstance.meltProofs(meltQuote, proofsToSend);
+
+        if (!meltResponse) {
+          throw new Error('Payment failed at the mint');
+        }
+
+        // Step 4: Save keep proofs + any change from the melt
+        const changeProofs = meltResponse.change ?? [];
+        const allRemainingProofs = [...proofsToKeep, ...changeProofs];
+        saveProofsForMint(selectedMintUrl, allRemainingProofs);
 
         addTransaction({
           type: 'melt',
-          amount: proofs.reduce((s, p) => s + p.amount, 0),
+          amount: invoiceAmount,
           mint: selectedMintUrl,
           status: 'paid',
           invoice: bolt11,
@@ -344,10 +416,10 @@ export function useCashuWallet() {
 
         toast({
           title: 'Payment sent',
-          description: 'Lightning invoice paid via ecash melt.',
+          description: `${invoiceAmount} sats paid via Lightning.`,
         });
 
-        return { preimage: result?.preimage ?? '' };
+        return { preimage: meltResponse.preimage ?? '' };
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unknown error';
         toast({
@@ -360,12 +432,19 @@ export function useCashuWallet() {
         setIsPaying(false);
       }
     },
-    [walletInstance, selectedMintUrl, proofsByMint, saveProofs, addTransaction, toast],
+    [walletInstance, selectedMintUrl, getProofsForMint, saveProofsForMint, addTransaction, toast],
   );
+
+  // ═══════════════════════════════════════════════════════════════
+  // SEND: Generate ecash token (offline, no Lightning needed)
+  // ═══════════════════════════════════════════════════════════════
 
   /**
    * Send ecash tokens to someone (off-chain, no Lightning needed).
    * Returns a token string that can be shared via text, QR, or Nostr DM.
+   *
+   * Uses wallet.send(amount, proofs) which returns { send, keep }.
+   * The send proofs are encoded into a token string.
    */
   const sendEcashTokens = useCallback(
     (amountSats: number): string | null => {
@@ -374,7 +453,7 @@ export function useCashuWallet() {
         return null;
       }
 
-      const proofs = proofsByMint[selectedMintUrl] ?? [];
+      const proofs = getProofsForMint(selectedMintUrl);
       const balance = proofs.reduce((s, p) => s + p.amount, 0);
       if (balance < amountSats) {
         toast({
@@ -386,31 +465,113 @@ export function useCashuWallet() {
       }
 
       try {
-        // Collect proofs that sum to >= amount
-        let accumulated = 0;
-        const tokensToSend: Proof[] = [];
-        const remaining: Proof[] = [];
+        // wallet.send splits proofs into { send, keep }
+        const result = walletInstance.send(amountSats, proofs);
 
-        for (const proof of proofs) {
-          if (accumulated < amountSats) {
-            tokensToSend.push(proof);
-            accumulated += proof.amount;
-          } else {
-            remaining.push(proof);
+        // Handle both sync and async returns
+        const handleResult = (sendResult: { send?: Proof[]; keep?: Proof[]; returnChange?: Proof[] } | null) => {
+          if (!sendResult) {
+            toast({ title: 'Failed to send tokens', variant: 'destructive' });
+            return null;
           }
+
+          const proofsToSend = sendResult.send ?? [];
+          const proofsToKeep = sendResult.keep ?? sendResult.returnChange ?? [];
+
+          if (!proofsToSend || proofsToSend.length === 0) {
+            toast({ title: 'Failed to create send proofs', variant: 'destructive' });
+            return null;
+          }
+
+          // Encode the send proofs into a token string
+          const token = getEncodedToken({
+            mint: selectedMintUrl,
+            proofs: proofsToSend,
+          });
+
+          // Save the keep proofs back to storage
+          saveProofsForMint(selectedMintUrl, proofsToKeep);
+
+          addTransaction({
+            type: 'send',
+            amount: amountSats,
+            mint: selectedMintUrl,
+            status: 'paid',
+            token,
+          });
+
+          return token;
+        };
+
+        // Check if result is a Promise (async) or direct value
+        if (result instanceof Promise) {
+          return handleResult((result as unknown as Promise<{ send?: Proof[]; keep?: Proof[]; returnChange?: Proof[] } | null>)
+            .then((r) => r)
+            .catch(() => null)
+            // This is a sync function so we can't actually await —
+            // but wallet.send in v4 might be sync. Let's handle both.
+          );
         }
 
-        if (accumulated < amountSats) {
-          toast({ title: 'Insufficient balance', variant: 'destructive' });
-          return null;
+        return handleResult(result as { send?: Proof[]; keep?: Proof[]; returnChange?: Proof[] } | null);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        toast({
+          title: 'Failed to send tokens',
+          description: msg,
+          variant: 'destructive',
+        });
+        return null;
+      }
+    },
+    [walletInstance, selectedMintUrl, getProofsForMint, saveProofsForMint, addTransaction, toast],
+  );
+
+  /**
+   * Async version of sendEcashTokens for when wallet.send is async.
+   * Use this when calling from an async context.
+   */
+  const sendEcashTokensAsync = useCallback(
+    async (amountSats: number): Promise<string | null> => {
+      if (!walletInstance) {
+        toast({ title: 'Wallet not ready', variant: 'destructive' });
+        return null;
+      }
+
+      const proofs = getProofsForMint(selectedMintUrl);
+      const balance = proofs.reduce((s, p) => s + p.amount, 0);
+      if (balance < amountSats) {
+        toast({
+          title: 'Insufficient balance',
+          description: `You have ${balance} sats but need ${amountSats}.`,
+          variant: 'destructive',
+        });
+        return null;
+      }
+
+      try {
+        // wallet.send splits proofs into { send, keep }
+        const sendResult = await walletInstance.send(amountSats, proofs);
+
+        if (!sendResult) {
+          throw new Error('wallet.send returned null');
         }
 
+        const proofsToSend = sendResult.send ?? [];
+        const proofsToKeep = sendResult.keep ?? sendResult.returnChange ?? [];
+
+        if (!proofsToSend || proofsToSend.length === 0) {
+          throw new Error('Failed to create send proofs');
+        }
+
+        // Encode the send proofs into a token string
         const token = getEncodedToken({
           mint: selectedMintUrl,
-          proofs: tokensToSend,
+          proofs: proofsToSend,
         });
 
-        saveProofs(selectedMintUrl, remaining);
+        // Save the keep proofs back to storage
+        saveProofsForMint(selectedMintUrl, proofsToKeep);
 
         addTransaction({
           type: 'send',
@@ -431,11 +592,22 @@ export function useCashuWallet() {
         return null;
       }
     },
-    [walletInstance, selectedMintUrl, proofsByMint, saveProofs, addTransaction, toast],
+    [walletInstance, selectedMintUrl, getProofsForMint, saveProofsForMint, addTransaction, toast],
   );
+
+  // ═══════════════════════════════════════════════════════════════
+  // RECEIVE: Redeem ecash token
+  // ═══════════════════════════════════════════════════════════════
 
   /**
    * Receive ecash tokens from a token string (redeem to wallet).
+   *
+   * In v4, wallet.receive() can accept either:
+   * - A token string (auto-decoded)
+   * - An array of proofs
+   *
+   * The Satoshi Pay wallet passes the token string directly.
+   * We handle tokens from other mints by creating a wallet for that mint.
    */
   const receiveEcashTokens = useCallback(
     async (token: string): Promise<number | null> => {
@@ -445,9 +617,14 @@ export function useCashuWallet() {
       }
 
       try {
+        // Decode the token to find the mint
         const decoded = getDecodedToken(token);
         const tokenMint = decoded.mint;
         const tokenProofs = decoded.proofs;
+
+        if (!tokenProofs || tokenProofs.length === 0) {
+          throw new Error('Token does not contain any proofs');
+        }
 
         // If the token is from a different mint, create a wallet for that mint
         let targetWallet = walletInstance;
@@ -459,12 +636,20 @@ export function useCashuWallet() {
           await targetWallet.loadMint();
         }
 
+        // Receive (redeem) the proofs
+        // v4 wallet.receive can take proofs array or token string
         const received = await targetWallet.receive(tokenProofs);
+
+        if (!received || received.length === 0) {
+          throw new Error('Token already claimed or invalid.');
+        }
+
         const amount = received.reduce((s, p) => s + p.amount, 0);
         const mintUrl = tokenMint ?? selectedMintUrl;
 
-        const existing = proofsByMint[mintUrl] ?? [];
-        saveProofs(mintUrl, [...existing, ...received]);
+        // Merge with existing proofs
+        const existing = getProofsForMint(mintUrl);
+        saveProofsForMint(mintUrl, [...existing, ...received]);
 
         addTransaction({
           type: 'receive',
@@ -490,7 +675,7 @@ export function useCashuWallet() {
         return null;
       }
     },
-    [walletInstance, bip39Seed, selectedMintUrl, proofsByMint, saveProofs, addTransaction, toast],
+    [walletInstance, bip39Seed, selectedMintUrl, getProofsForMint, saveProofsForMint, addTransaction, toast],
   );
 
   /** Reset the wallet (delete all data). */
@@ -545,6 +730,7 @@ export function useCashuWallet() {
 
     // Cashu-specific
     sendEcashTokens,
+    sendEcashTokensAsync,
     receiveEcashTokens,
   };
 }

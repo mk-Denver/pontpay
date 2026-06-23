@@ -143,10 +143,10 @@ export default function WalletPage() {
   };
 
   // ─── Send handlers ───────────────────────────────────────────
-  const handleSendEcash = () => {
+  const handleSendEcash = async () => {
     const amount = parseInt(sendAmount);
     if (!amount) return;
-    const token = cashu.sendEcashTokens(amount);
+    const token = await cashu.sendEcashTokensAsync(amount);
     if (token) setGeneratedToken(token);
   };
 
@@ -535,7 +535,7 @@ function SendTab({ isCashu, balance, currentMintBalance, selectedMint, allMints,
   setSendInvoice: (v: string) => void;
   generatedToken: string | null;
   setGeneratedToken: (v: string | null) => void;
-  onSendEcash: () => void;
+  onSendEcash: () => Promise<void>;
   onSendLightning: () => void;
   isPaying: boolean;
   copied: boolean;
