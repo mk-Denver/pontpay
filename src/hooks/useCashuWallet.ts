@@ -3,17 +3,16 @@
  * the Cashu protocol. Non-custodial: the user holds a BIP39 seed phrase
  * and all proofs are stored locally.
  *
- * Implements the correct @cashu/cashu-ts v4 API patterns following
- * the Satoshi Pay wallet reference implementation:
- * https://github.com/Codepocketdev/satoshi-pay-wallet
+ * Uses @cashu/cashu-ts v4 typed BOLT11 helper methods:
+ * - createMintQuoteBolt11(amount, description) → { quote, request, state }
+ * - checkMintQuoteBolt11(quoteId) → { quote, request, state }
+ * - mintProofsBolt11(amount, quoteId) → Proof[]
+ * - createMeltQuoteBolt11(invoice) → { quote, amount, fee_reserve }
+ * - meltProofsBolt11(meltQuote, proofsToSend) → { quote, change }
+ * - send(amount, proofs) → { send, keep }
+ * - receive(proofs) → Proof[]
  *
- * Key v4 API patterns:
- * - wallet.send(amount, proofs) → { send: [...], keep: [...] }
- * - wallet.createMeltQuote(invoice) → melt quote with amount + fee_reserve
- * - wallet.meltProofs(quote, proofsToSend, options) → pays invoice
- * - wallet.createMintQuote(amount) → Lightning invoice to receive
- * - wallet.checkMintQuote(quote) → mints tokens if invoice paid
- * - wallet.receive(tokenString) → redeems ecash token
+ * Reference: https://github.com/Codepocketdev/satoshi-pay-wallet
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
@@ -55,6 +54,8 @@ export interface CashuTransaction {
 export interface MakeInvoiceResult {
   invoice: string;
   paymentHash: string;
+  /** The mint quote ID — needed to check status and mint tokens. */
+  quoteId: string;
 }
 
 export interface PaymentResult {
@@ -244,7 +245,8 @@ export function useCashuWallet() {
    * The user pays this invoice (or someone else pays it) to receive
    * ecash tokens from the mint.
    *
-   * Uses wallet.createMintQuote(amount) which returns a Lightning invoice.
+   * v4 API: wallet.createMintQuoteBolt11(amount, description)
+   * Returns: { quote (ID), request (BOLT11 invoice), amount, state, ... }
    */
   const makeInvoice = useCallback(
     async (amountSats: number, memo?: string): Promise<MakeInvoiceResult | null> => {
@@ -259,8 +261,10 @@ export function useCashuWallet() {
 
       setIsCreatingInvoice(true);
       try {
-        // createMintQuote returns a Lightning invoice
-        const quote = await walletInstance.createMintQuote(amountSats);
+        // v4: createMintQuoteBolt11 returns { quote, request, amount, state }
+        // - quote = the quote ID (used to check status and mint)
+        // - request = the BOLT11 Lightning invoice
+        const quoteResponse = await walletInstance.createMintQuoteBolt11(amountSats, memo);
 
         addTransaction({
           type: 'mint',
@@ -268,12 +272,13 @@ export function useCashuWallet() {
           memo,
           mint: selectedMintUrl,
           status: 'pending',
-          invoice: quote.quote,
+          invoice: quoteResponse.request, // The actual BOLT11 invoice
         });
 
         return {
-          invoice: quote.quote,
-          paymentHash: quote.quote,
+          invoice: quoteResponse.request, // The BOLT11 Lightning invoice
+          paymentHash: quoteResponse.quote, // Use quote ID as payment hash reference
+          quoteId: quoteResponse.quote, // The quote ID for checking status
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -291,39 +296,61 @@ export function useCashuWallet() {
   );
 
   /**
-   * Check if a mint quote has been paid and mint tokens.
-   * Called after the user pays the Lightning invoice from makeInvoice.
+   * Check if a mint quote has been paid and mint tokens if so.
    *
-   * Uses wallet.checkMintQuote(quote) which returns proofs if paid.
+   * v4 flow:
+   * 1. checkMintQuoteBolt11(quoteId) → returns { state: "UNPAID" | "PAID" | "ISSUED" }
+   * 2. If state is "PAID", call mintProofsBolt11(amount, quoteId) → Proof[]
+   * 3. If state is "ISSUED", tokens were already minted
    */
   const checkMintQuote = useCallback(
-    async (quote: string, amountSats: number): Promise<boolean> => {
+    async (quoteId: string, amountSats: number): Promise<boolean> => {
       if (!walletInstance) return false;
       try {
-        const result = await walletInstance.checkMintQuote(quote);
-        const newProofs = result?.proofs ?? [];
-        if (newProofs.length > 0) {
-          // Merge new proofs with existing
-          const existing = getProofsForMint(selectedMintUrl);
-          saveProofsForMint(selectedMintUrl, [...existing, ...newProofs]);
+        // Check the quote status
+        const quoteStatus = await walletInstance.checkMintQuoteBolt11(quoteId);
 
-          addTransaction({
-            type: 'mint',
-            amount: amountSats,
-            mint: selectedMintUrl,
-            status: 'paid',
-            invoice: quote,
-          });
+        // State can be "UNPAID", "PAID", or "ISSUED"
+        if (quoteStatus.state === 'UNPAID') {
+          return false; // Not paid yet
+        }
 
-          toast({
-            title: 'Payment received!',
-            description: `${amountSats} sats minted to your wallet.`,
-          });
+        // If PAID, we need to mint the tokens
+        // If ISSUED, tokens were already minted (shouldn't happen if we're checking)
+        if (quoteStatus.state === 'PAID') {
+          // Mint the proofs (this converts the paid quote into ecash tokens)
+          const newProofs = await walletInstance.mintProofsBolt11(amountSats, quoteId);
 
+          if (newProofs && newProofs.length > 0) {
+            // Merge new proofs with existing
+            const existing = getProofsForMint(selectedMintUrl);
+            saveProofsForMint(selectedMintUrl, [...existing, ...newProofs]);
+
+            addTransaction({
+              type: 'mint',
+              amount: amountSats,
+              mint: selectedMintUrl,
+              status: 'paid',
+              invoice: quoteId,
+            });
+
+            toast({
+              title: 'Payment received!',
+              description: `${amountSats} sats minted to your wallet.`,
+            });
+
+            return true;
+          }
+        }
+
+        // Already issued — tokens were already minted
+        if (quoteStatus.state === 'ISSUED') {
           return true;
         }
+
         return false;
-      } catch {
+      } catch (err) {
+        console.error('checkMintQuote error:', err);
         return false;
       }
     },
@@ -337,10 +364,10 @@ export function useCashuWallet() {
   /**
    * Pay a Lightning invoice by melting ecash tokens.
    *
-   * Flow (following Satoshi Pay pattern):
-   * 1. createMeltQuote(invoice) → get amount + fee_reserve
-   * 2. send(totalAmount, proofs) → split into { send, keep }
-   * 3. meltProofs(quote, proofsToSend) → pays the invoice
+   * v4 flow (following Satoshi Pay pattern):
+   * 1. createMeltQuoteBolt11(invoice) → { amount, fee_reserve, quote }
+   * 2. send(totalAmount, proofs) → { send, keep }
+   * 3. meltProofsBolt11(meltQuote, proofsToSend) → { quote, change }
    * 4. Save keep + change proofs
    */
   const payInvoice = useCallback(
@@ -367,7 +394,7 @@ export function useCashuWallet() {
       setIsPaying(true);
       try {
         // Step 1: Create melt quote to get amount + fee
-        const meltQuote = await walletInstance.createMeltQuote(bolt11);
+        const meltQuote = await walletInstance.createMeltQuoteBolt11(bolt11);
 
         const invoiceAmount = meltQuote.amount;
         const feeReserve = meltQuote.fee_reserve ?? 0;
@@ -379,23 +406,21 @@ export function useCashuWallet() {
         }
 
         // Step 2: Split proofs using wallet.send()
-        // This returns { send: [...], keep: [...] }
         const sendResult = await walletInstance.send(totalNeeded, proofs);
 
         if (!sendResult) {
           throw new Error('Failed to prepare proofs for payment');
         }
 
-        // v4 returns { send, keep }
         const proofsToSend = sendResult.send ?? [];
-        const proofsToKeep = sendResult.keep ?? sendResult.returnChange ?? [];
+        const proofsToKeep = sendResult.keep ?? [];
 
         if (!proofsToSend || proofsToSend.length === 0) {
           throw new Error('Failed to create send proofs');
         }
 
         // Step 3: Melt the proofs to pay the invoice
-        const meltResponse = await walletInstance.meltProofs(meltQuote, proofsToSend);
+        const meltResponse = await walletInstance.meltProofsBolt11(meltQuote, proofsToSend);
 
         if (!meltResponse) {
           throw new Error('Payment failed at the mint');
@@ -443,95 +468,10 @@ export function useCashuWallet() {
    * Send ecash tokens to someone (off-chain, no Lightning needed).
    * Returns a token string that can be shared via text, QR, or Nostr DM.
    *
-   * Uses wallet.send(amount, proofs) which returns { send, keep }.
+   * v4 API: wallet.send(amount, proofs) → Promise<{ send, keep }>
    * The send proofs are encoded into a token string.
    */
   const sendEcashTokens = useCallback(
-    (amountSats: number): string | null => {
-      if (!walletInstance) {
-        toast({ title: 'Wallet not ready', variant: 'destructive' });
-        return null;
-      }
-
-      const proofs = getProofsForMint(selectedMintUrl);
-      const balance = proofs.reduce((s, p) => s + p.amount, 0);
-      if (balance < amountSats) {
-        toast({
-          title: 'Insufficient balance',
-          description: `You have ${balance} sats but need ${amountSats}.`,
-          variant: 'destructive',
-        });
-        return null;
-      }
-
-      try {
-        // wallet.send splits proofs into { send, keep }
-        const result = walletInstance.send(amountSats, proofs);
-
-        // Handle both sync and async returns
-        const handleResult = (sendResult: { send?: Proof[]; keep?: Proof[]; returnChange?: Proof[] } | null) => {
-          if (!sendResult) {
-            toast({ title: 'Failed to send tokens', variant: 'destructive' });
-            return null;
-          }
-
-          const proofsToSend = sendResult.send ?? [];
-          const proofsToKeep = sendResult.keep ?? sendResult.returnChange ?? [];
-
-          if (!proofsToSend || proofsToSend.length === 0) {
-            toast({ title: 'Failed to create send proofs', variant: 'destructive' });
-            return null;
-          }
-
-          // Encode the send proofs into a token string
-          const token = getEncodedToken({
-            mint: selectedMintUrl,
-            proofs: proofsToSend,
-          });
-
-          // Save the keep proofs back to storage
-          saveProofsForMint(selectedMintUrl, proofsToKeep);
-
-          addTransaction({
-            type: 'send',
-            amount: amountSats,
-            mint: selectedMintUrl,
-            status: 'paid',
-            token,
-          });
-
-          return token;
-        };
-
-        // Check if result is a Promise (async) or direct value
-        if (result instanceof Promise) {
-          return handleResult((result as unknown as Promise<{ send?: Proof[]; keep?: Proof[]; returnChange?: Proof[] } | null>)
-            .then((r) => r)
-            .catch(() => null)
-            // This is a sync function so we can't actually await —
-            // but wallet.send in v4 might be sync. Let's handle both.
-          );
-        }
-
-        return handleResult(result as { send?: Proof[]; keep?: Proof[]; returnChange?: Proof[] } | null);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Unknown error';
-        toast({
-          title: 'Failed to send tokens',
-          description: msg,
-          variant: 'destructive',
-        });
-        return null;
-      }
-    },
-    [walletInstance, selectedMintUrl, getProofsForMint, saveProofsForMint, addTransaction, toast],
-  );
-
-  /**
-   * Async version of sendEcashTokens for when wallet.send is async.
-   * Use this when calling from an async context.
-   */
-  const sendEcashTokensAsync = useCallback(
     async (amountSats: number): Promise<string | null> => {
       if (!walletInstance) {
         toast({ title: 'Wallet not ready', variant: 'destructive' });
@@ -550,7 +490,7 @@ export function useCashuWallet() {
       }
 
       try {
-        // wallet.send splits proofs into { send, keep }
+        // v4: wallet.send is async, returns { send, keep }
         const sendResult = await walletInstance.send(amountSats, proofs);
 
         if (!sendResult) {
@@ -558,7 +498,7 @@ export function useCashuWallet() {
         }
 
         const proofsToSend = sendResult.send ?? [];
-        const proofsToKeep = sendResult.keep ?? sendResult.returnChange ?? [];
+        const proofsToKeep = sendResult.keep ?? [];
 
         if (!proofsToSend || proofsToSend.length === 0) {
           throw new Error('Failed to create send proofs');
@@ -602,12 +542,8 @@ export function useCashuWallet() {
   /**
    * Receive ecash tokens from a token string (redeem to wallet).
    *
-   * In v4, wallet.receive() can accept either:
-   * - A token string (auto-decoded)
-   * - An array of proofs
-   *
-   * The Satoshi Pay wallet passes the token string directly.
-   * We handle tokens from other mints by creating a wallet for that mint.
+   * v4 API: wallet.receive(proofs) → Proof[]
+   * The Satoshi Pay wallet passes decoded proofs directly.
    */
   const receiveEcashTokens = useCallback(
     async (token: string): Promise<number | null> => {
@@ -617,7 +553,7 @@ export function useCashuWallet() {
       }
 
       try {
-        // Decode the token to find the mint
+        // Decode the token to find the mint and proofs
         const decoded = getDecodedToken(token);
         const tokenMint = decoded.mint;
         const tokenProofs = decoded.proofs;
@@ -636,8 +572,7 @@ export function useCashuWallet() {
           await targetWallet.loadMint();
         }
 
-        // Receive (redeem) the proofs
-        // v4 wallet.receive can take proofs array or token string
+        // v4: wallet.receive takes proofs array and returns new redeemed proofs
         const received = await targetWallet.receive(tokenProofs);
 
         if (!received || received.length === 0) {
@@ -730,7 +665,6 @@ export function useCashuWallet() {
 
     // Cashu-specific
     sendEcashTokens,
-    sendEcashTokensAsync,
     receiveEcashTokens,
   };
 }

@@ -29,7 +29,7 @@ export interface UnifiedWallet {
   /** Balance is loading. */
   balanceLoading: boolean;
   /** Create a Lightning invoice to receive sats. */
-  makeInvoice: (amountSats: number, memo?: string) => Promise<{ invoice: string; paymentHash: string } | null>;
+  makeInvoice: (amountSats: number, memo?: string) => Promise<{ invoice: string; paymentHash: string; quoteId?: string } | null>;
   /** Pay a Lightning invoice. */
   payInvoice: (bolt11: string) => Promise<{ preimage: string } | null>;
   /** Is a payment in progress. */

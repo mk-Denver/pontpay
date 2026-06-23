@@ -170,9 +170,10 @@ export default function WalletPage() {
     if (result) {
       setGeneratedInvoice(result.invoice);
       // Poll for payment (Cashu mint quote check)
-      if (unified.walletType === 'cashu') {
+      if (unified.walletType === 'cashu' && 'quoteId' in result) {
+        const quoteId = (result as { quoteId: string }).quoteId;
         const interval = setInterval(async () => {
-          const paid = await cashu.checkMintQuote(result.invoice, amount);
+          const paid = await cashu.checkMintQuote(quoteId, amount);
           if (paid) {
             clearInterval(interval);
             setInvoiceCheckInterval(null);
