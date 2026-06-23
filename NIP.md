@@ -223,3 +223,55 @@ WebLN browser extension detection and manual QR fallback are also supported.
   follower graph) before transacting
 - In-person cash exchange carries inherent physical risk — meet in safe,
   public locations
+
+## BTCPay Server Hub-and-Spoke Architecture
+
+PontPay supports an optional Super Agent topology using BTCPay Server's
+multi-tenancy and Greenfield API. This is an infrastructure overlay, not
+a protocol change — it implements the PIP-01 `custodial_escrow` subtype.
+
+### Roles
+
+| Role | Description |
+|------|-------------|
+| Super Agent | Operates a BTCPay Server with a funded Lightning node. Creates stores, issues scoped API keys, provides liquidity and dispute resolution. |
+| Local Agent | Connects to a Super Agent's server via a scoped API key. Creates hold invoices through the server without running their own infrastructure. |
+
+### Escrow Descriptor (PIP-01 custodial_escrow)
+
+When a Local Agent operates under a Super Agent, their escrow descriptor
+declares `custodial_escrow` with the Super Agent's Nostr pubkey as:
+
+- `custody_authority` — controls the escrow asset while the swap is active
+- `release_authority` — may settle the hold invoice after fiat confirmation
+- `refund_authority` — may cancel/refund in disputes (PIP-03)
+
+### Swap Execution with BTCPay Hold Invoices
+
+1. Customer initiates swap → swap request (kind 7300) published
+2. Local Agent's app pings BTCPay Server (Greenfield API) → hold invoice generated
+3. Customer pays the invoice → funds locked (BTCPay status: Processing)
+4. Local Agent hands physical cash to customer
+5. Local Agent settles the invoice via API → Bitcoin claimed
+6. Swap transition (kind 7301) published: `lightning_settled`
+
+### Dispute Resolution (PIP-03)
+
+The Super Agent has total visibility on their BTCPay Server:
+- Hold invoice funding timestamps
+- Public Nostr transition logs signed by both parties
+- Admin access to force-settle or cancel invoices
+
+Acting as `refund_authority`, the Super Agent can resolve disputes by
+manually settling or cancelling the hold invoice on their server.
+
+### Greenfield API Endpoints Used
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/v1/stores` | Super Agent creates a store for a local agent |
+| `POST /api/v1/api-keys` | Super Agent generates a scoped API key |
+| `POST /api/v1/stores/{id}/invoices` | Local agent creates a hold invoice |
+| `GET /api/v1/stores/{id}/invoices/{id}` | Check invoice status |
+| `POST /api/v1/stores/{id}/invoices/{id}/settle` | Settle (claim funds) |
+| `POST /api/v1/stores/{id}/invoices/{id}/cancel` | Cancel (refund) |

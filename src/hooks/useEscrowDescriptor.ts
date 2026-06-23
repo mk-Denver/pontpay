@@ -33,6 +33,8 @@ export interface EscrowDescriptorInput {
   invoiceNetwork?: string;
   /** Payout network. */
   payoutNetwork?: string;
+  /** Super Agent's Nostr pubkey — set as custody/release/refund authority (custodial_escrow). */
+  superAgentPubkey?: string;
 }
 
 /** Build the JSON content for a kind 30361 event. */
@@ -53,9 +55,24 @@ function buildEscrowContent(input: EscrowDescriptorInput): string {
 
   // Add custodial fields if applicable
   if (input.escrowType === 'custodial_escrow') {
-    content.custody_authority = 'escrow_operator';
-    content.release_authority = 'escrow_operator';
-    content.refund_authority = 'escrow_operator';
+    // If a Super Agent pubkey is provided, use it as the authority
+    // (hub-and-spoke model: Super Agent is the infrastructure provider)
+    const authority = input.superAgentPubkey ?? 'escrow_operator';
+    content.custody_authority = authority;
+    content.release_authority = authority;
+    content.refund_authority = authority;
+
+    // Add implementations array (PIP-01 custodial subtype)
+    content.implementations = [
+      {
+        network: 'lightning',
+        invoice_asset: 'BTC',
+        invoice_currency: 'sats',
+        invoice_amount_rule: 'derived_from_swap_request',
+        invoice_expiry_rule: 'expires_if_unpaid_before_funding_timeout',
+        payout_network: 'lightning',
+      },
+    ];
   }
 
   return JSON.stringify(content);

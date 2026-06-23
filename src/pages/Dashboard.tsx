@@ -36,6 +36,7 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { useAgents } from '@/hooks/useAgents';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
+import { useSuperAgent } from '@/hooks/useSuperAgent';
 import { useSwapMessages } from '@/hooks/useSwapMessages';
 import { formatSats, estimateFiat, type PontmoreSwap } from '@/lib/pontmore';
 
@@ -312,7 +313,9 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
   const { hasWallet, makeInvoice } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
   const { sendMessage, hasNip44 } = useSwapMessages();
+  const { isConnected: isBtcPayConnected, createHoldInvoice, superAgentPubkey } = useSuperAgent();
   const [selectedAgentPubkey, setSelectedAgentPubkey] = useState(preselectedAgent ?? '');
+  const selectedAgent = agents.find((a) => a.event.pubkey === selectedAgentPubkey);
   const [amountSats, setAmountSats] = useState('');
   const [currency, setCurrency] = useState('KES');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -330,8 +333,20 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
 
     try {
       // Step 1: Generate a Lightning invoice to receive BTC
+      // If BTCPay Super Agent is connected, create a hold invoice via their server
       let invoice: string | null = null;
-      if (hasWallet) {
+      let escrowRef = selectedAgent?.escrowRef ?? '';
+
+      if (isBtcPayConnected) {
+        setStatusMsg('Creating BTCPay hold invoice via Super Agent…');
+        const holdInvoice = await createHoldInvoice.mutateAsync({
+          amount: sats,
+          currency: 'SATS',
+          description: `PontPay deposit ${phoneNumber}`,
+        });
+        invoice = holdInvoice.bolt11;
+        escrowRef = holdInvoice.invoiceId; // BTCPay invoice ID as escrow reference
+      } else if (hasWallet) {
         setStatusMsg('Generating Lightning invoice…');
         const result = await makeInvoice(sats, `PontPay deposit ${phoneNumber}`);
         invoice = result?.invoice ?? null;
@@ -345,6 +360,7 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
         amountSats: sats,
         fiatAmount: fiatEstimate,
         fiatCurrency: currency,
+        escrowReference: escrowRef,
       });
 
       // Step 3: Send the invoice + customer details via NIP-17 private lane
@@ -389,6 +405,20 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
 
   return (
     <div className="space-y-4">
+      {/* BTCPay Super Agent indicator */}
+      {isBtcPayConnected && (
+        <div className="flex items-center gap-3 rounded-lg border border-blue-500/30 bg-blue-500/5 p-3">
+          <Shield className="h-4 w-4 text-blue-600" />
+          <div className="flex-1 text-sm">
+            <p className="font-medium text-blue-600">BTCPay escrow active</p>
+            <p className="text-xs text-muted-foreground">
+              Hold invoices generated via Super Agent&apos;s BTCPay Server. {superAgentPubkey ? `Authority: ${superAgentPubkey.slice(0, 16)}...` : ''}
+            </p>
+          </div>
+          <Link to="/super-agent"><Button variant="outline" size="sm">Configure</Button></Link>
+        </div>
+      )}
+
       {/* How it works — kiosk steps */}
       <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-4">
         <p className="mb-3 text-sm font-medium text-green-600 flex items-center gap-2">
@@ -522,7 +552,7 @@ function DepositForm({ preselectedAgent }: { preselectedAgent?: string }) {
         </div>
       )}
 
-      <Button onClick={handleSubmit} disabled={submitting || !selectedAgentPubkey || !amountSats || !hasWallet} className="w-full">
+      <Button onClick={handleSubmit} disabled={submitting || !selectedAgentPubkey || !amountSats || (!hasWallet && !isBtcPayConnected)} className="w-full">
         {submitting ? (
           <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
         ) : (
