@@ -351,7 +351,6 @@ export default function AgentInboxPage() {
             <DialogTitle className="flex items-center gap-2">
               {selectedSwap?.swapType === 'deposit' && <ArrowDownToLine className="h-5 w-5 text-green-600" />}
               {selectedSwap?.swapType === 'withdrawal' && <ArrowUpFromLine className="h-5 w-5 text-orange-600" />}
-              {selectedSwap?.swapType === 'transfer' && <Send className="h-5 w-5 text-blue-600" />}
               <span className="capitalize">{selectedSwap?.swapType} request</span>
             </DialogTitle>
             <DialogDescription>

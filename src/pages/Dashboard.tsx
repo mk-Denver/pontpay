@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
-  Send,
   Zap,
   Wallet as WalletIcon,
   Store,
@@ -43,7 +42,7 @@ import { formatSats, estimateFiat, type PontmoreSwap } from '@/lib/pontmore';
 const CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
 const BTC_PRICE_USD = 65000;
 
-type Action = 'deposit' | 'withdraw' | 'transfer' | null;
+type Action = 'deposit' | 'withdraw' | null;
 
 export default function Dashboard() {
   const { user } = useCurrentUser();
@@ -140,7 +139,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <div className="grid grid-cols-3 gap-3 lg:col-span-2">
+          <div className="grid grid-cols-2 gap-3 lg:col-span-2">
             <ActionButton
               icon={ArrowDownToLine}
               label="Deposit"
@@ -157,14 +156,6 @@ export default function Dashboard() {
               active={action === 'withdraw'}
               color="orange"
             />
-            <ActionButton
-              icon={Send}
-              label="Transfer"
-              description="BTC → BTC"
-              onClick={() => { setAction('transfer'); setSearchParams({ action: 'transfer' }); }}
-              active={action === 'transfer'}
-              color="blue"
-            />
           </div>
         </div>
 
@@ -177,15 +168,12 @@ export default function Dashboard() {
                   <CardTitle className="flex items-center gap-2">
                     {action === 'deposit' && <ArrowDownToLine className="h-5 w-5 text-green-600" />}
                     {action === 'withdraw' && <ArrowUpFromLine className="h-5 w-5 text-orange-600" />}
-                    {action === 'transfer' && <Send className="h-5 w-5 text-blue-600" />}
                     {action === 'deposit' && 'Deposit — Cash to Bitcoin'}
                     {action === 'withdraw' && 'Withdraw — Bitcoin to Cash'}
-                    {action === 'transfer' && 'Peer-to-Peer Transfer'}
                   </CardTitle>
                   <CardDescription className="mt-1">
                     {action === 'deposit' && 'Hand cash to an agent at their kiosk, receive Bitcoin instantly.'}
                     {action === 'withdraw' && 'Pay the agent\'s Lightning invoice, receive cash at the kiosk.'}
-                    {action === 'transfer' && 'Send BTC instantly via Lightning Network.'}
                   </CardDescription>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => { setAction(null); setSearchParams({}); }}>
@@ -196,7 +184,6 @@ export default function Dashboard() {
             <CardContent>
               {action === 'deposit' && <DepositForm preselectedAgent={agentParam ?? undefined} />}
               {action === 'withdraw' && <WithdrawForm preselectedAgent={agentParam ?? undefined} />}
-              {action === 'transfer' && <TransferForm />}
             </CardContent>
           </Card>
         )}
@@ -259,12 +246,11 @@ function ActionButton({
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string; description: string; onClick: () => void; active: boolean;
-  color: 'green' | 'orange' | 'blue';
+  color: 'green' | 'orange';
 }) {
   const colorClasses = {
     green: 'hover:bg-green-500/5 hover:border-green-500/30 text-green-600',
     orange: 'hover:bg-orange-500/5 hover:border-orange-500/30 text-orange-600',
-    blue: 'hover:bg-blue-500/5 hover:border-blue-500/30 text-blue-600',
   };
   return (
     <button
@@ -281,7 +267,7 @@ function ActionButton({
 }
 
 function SwapRow({ swap }: { swap: import('@/hooks/useSwapStateMachine').LocalSwapRecord }) {
-  const Icon = swap.swapType === 'deposit' ? ArrowDownToLine : swap.swapType === 'withdrawal' ? ArrowUpFromLine : Send;
+  const Icon = swap.swapType === 'deposit' ? ArrowDownToLine : ArrowUpFromLine;
   const statusClass =
     swap.state === 'completed' ? 'text-green-600 bg-green-500/10 border-green-500/20' :
     swap.state === 'cancelled' || swap.state === 'disputed' || swap.state === 'expired' ? 'text-red-600 bg-red-500/10 border-red-500/20' :
@@ -758,102 +744,3 @@ function WithdrawForm({ preselectedAgent }: { preselectedAgent?: string }) {
   );
 }
 
-// ─── Transfer Form (Lightning P2P) ──────────────────────────────
-
-function TransferForm() {
-  const { hasWallet, balance, payInvoice } = useUnifiedWallet();
-  const { publishSwapRequest } = useSwapStateMachine();
-  const [recipientPubkey, setRecipientPubkey] = useState('');
-  const [recipientName, setRecipientName] = useState('');
-  const [bolt11, setBolt11] = useState('');
-  const [memo, setMemo] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [paying, setPaying] = useState(false);
-
-  const handleSubmit = async () => {
-    if (!bolt11 || !recipientPubkey) return;
-    setSubmitting(true);
-
-    // Pay the Lightning invoice first
-    setPaying(true);
-    const result = await payInvoice(bolt11);
-    setPaying(false);
-
-    if (result) {
-      // Publish a swap request for record-keeping
-      await publishSwapRequest.mutateAsync({
-        swapType: 'transfer',
-        agentPubkey: recipientPubkey,
-        amountSats: 0,
-        fiatAmount: 0,
-        fiatCurrency: 'BTC',
-      });
-    }
-
-    setSubmitting(false);
-    setRecipientPubkey('');
-    setRecipientName('');
-    setBolt11('');
-    setMemo('');
-  };
-
-  return (
-    <div className="space-y-4">
-      {!hasWallet ? (
-        <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
-          <Info className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
-          <div className="text-sm">
-            <p className="font-medium text-amber-600">Wallet required</p>
-            <p className="text-muted-foreground">
-              Connect a Lightning wallet to send transfers.{' '}
-              <Link to="/wallet" className="font-medium text-foreground underline">Connect now</Link>.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center justify-between rounded-lg bg-muted/50 p-3 text-sm">
-          <span className="text-muted-foreground">Wallet balance</span>
-          <strong>{formatSats(balance)}</strong>
-        </div>
-      )}
-
-      <div>
-        <Label htmlFor="transfer-recipient">Recipient Nostr pubkey (npub or hex)</Label>
-        <Input id="transfer-recipient" placeholder="npub1..." value={recipientPubkey} onChange={(e) => setRecipientPubkey(e.target.value)} />
-      </div>
-
-      <div>
-        <Label htmlFor="transfer-name">Recipient name (optional)</Label>
-        <Input id="transfer-name" placeholder="e.g. Alice" value={recipientName} onChange={(e) => setRecipientName(e.target.value)} />
-      </div>
-
-      <div>
-        <Label htmlFor="transfer-invoice">Lightning invoice (BOLT11)</Label>
-        <Textarea id="transfer-invoice" placeholder="lnbc..." value={bolt11} onChange={(e) => setBolt11(e.target.value)} rows={3} />
-      </div>
-
-      <div>
-        <Label htmlFor="transfer-memo">Memo (optional)</Label>
-        <Input id="transfer-memo" placeholder="e.g. Dinner split" value={memo} onChange={(e) => setMemo(e.target.value)} />
-      </div>
-
-      <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-        <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
-        <p>
-          The Lightning payment settles instantly. A swap record is published
-          for your transaction history.
-        </p>
-      </div>
-
-      <Button onClick={handleSubmit} disabled={submitting || !recipientPubkey || !bolt11} className="w-full">
-        {paying ? (
-          <><Loader2 className="h-4 w-4 animate-spin" /> Paying Lightning invoice…</>
-        ) : submitting ? (
-          <><Loader2 className="h-4 w-4 animate-spin" /> Publishing swap record…</>
-        ) : (
-          <><Send className="h-4 w-4" /> Send transfer</>
-        )}
-      </Button>
-    </div>
-  );
-}

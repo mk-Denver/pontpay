@@ -17,7 +17,6 @@ import {
   Receipt,
   ArrowDownToLine,
   ArrowUpFromLine,
-  Send,
   Search,
   Trash2,
   Filter,
@@ -60,7 +59,7 @@ import { useSwapMessages, type SwapPayloadType, type SwapMessage } from '@/hooks
 import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { formatSats, type SwapState, type PontmoreSwap } from '@/lib/pontmore';
 
-type TxFilter = 'all' | 'deposit' | 'withdrawal' | 'transfer';
+type TxFilter = 'all' | 'deposit' | 'withdrawal';
 
 // ─── State helpers (shared with AgentInboxPage) ──────────────────
 
@@ -239,7 +238,6 @@ export default function TransactionsPage() {
                 <SelectItem value="all">All types</SelectItem>
                 <SelectItem value="deposit">Deposits</SelectItem>
                 <SelectItem value="withdrawal">Withdrawals</SelectItem>
-                <SelectItem value="transfer">Transfers</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -271,7 +269,7 @@ export default function TransactionsPage() {
               </div>
               <p className="text-lg font-medium">No swaps yet</p>
               <p className="mt-2 max-w-sm mx-auto text-sm text-muted-foreground">
-                Your deposits, withdrawals, and transfers will appear here.
+                Your deposits and withdrawals will appear here.
                 Start from the dashboard.
               </p>
             </CardContent>
@@ -292,7 +290,6 @@ export default function TransactionsPage() {
             <DialogTitle className="flex items-center gap-2">
               {selectedSwap?.swapType === 'deposit' && <ArrowDownToLine className="h-5 w-5 text-green-600" />}
               {selectedSwap?.swapType === 'withdrawal' && <ArrowUpFromLine className="h-5 w-5 text-orange-600" />}
-              {selectedSwap?.swapType === 'transfer' && <Send className="h-5 w-5 text-blue-600" />}
               <span className="capitalize">{selectedSwap?.swapType}</span>
             </DialogTitle>
             <DialogDescription>
@@ -330,7 +327,7 @@ function localToSwap(local: LocalSwapRecord): PontmoreSwap {
 // ─── Swap Row ────────────────────────────────────────────────────
 
 function SwapRow({ swap, onClick }: { swap: PontmoreSwap; onClick: () => void }) {
-  const Icon = swap.swapType === 'deposit' ? ArrowDownToLine : swap.swapType === 'withdrawal' ? ArrowUpFromLine : Send;
+  const Icon = swap.swapType === 'deposit' ? ArrowDownToLine : ArrowUpFromLine;
   const statusClass = STATE_COLORS[swap.state];
 
   return (
