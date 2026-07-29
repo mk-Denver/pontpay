@@ -111,6 +111,30 @@ export interface PontmoreEscrow {
   custodyAuthority?: string;
   releaseAuthority?: string;
   refundAuthority?: string;
+  // Service block (standalone-sufficient escrows)
+  service?: PontmoreEscrowService;
+  implementations?: PontmoreEscrowImplementation[];
+}
+
+/** The service block of a PIP-01 escrow descriptor (standalone-sufficient). */
+export interface PontmoreEscrowService {
+  transport: string[];
+  interface: string;
+  endpoint: string;
+  schema_url: string;
+  auth: string[];
+  operations: string[];
+  funding_model: string;
+  release_decisions: string[];
+}
+
+/** An implementation entry in a PIP-01 custodial escrow descriptor. */
+export interface PontmoreEscrowImplementation {
+  network: string;
+  invoice_asset: string;
+  invoice_currency: string;
+  invoice_amount_rule: string;
+  payout_network: string;
 }
 
 // ─── PIP-02: Swap State Machine Types ───────────────────────────
@@ -380,6 +404,36 @@ export function parsePontmoreEscrow(event: {
     // content may not be valid JSON
   }
 
+  // Extract service block if present
+  let service: PontmoreEscrowService | undefined;
+  let implementations: PontmoreEscrowImplementation[] | undefined;
+  try {
+    const c = JSON.parse(event.content);
+    if (c.service && typeof c.service === 'object') {
+      service = {
+        transport: Array.isArray(c.service.transport) ? c.service.transport : [],
+        interface: typeof c.service.interface === 'string' ? c.service.interface : '',
+        endpoint: typeof c.service.endpoint === 'string' ? c.service.endpoint : '',
+        schema_url: typeof c.service.schema_url === 'string' ? c.service.schema_url : '',
+        auth: Array.isArray(c.service.auth) ? c.service.auth : [],
+        operations: Array.isArray(c.service.operations) ? c.service.operations : [],
+        funding_model: typeof c.service.funding_model === 'string' ? c.service.funding_model : '',
+        release_decisions: Array.isArray(c.service.release_decisions) ? c.service.release_decisions : [],
+      };
+    }
+    if (Array.isArray(c.implementations)) {
+      implementations = c.implementations.map((impl: Record<string, unknown>) => ({
+        network: typeof impl.network === 'string' ? impl.network : '',
+        invoice_asset: typeof impl.invoice_asset === 'string' ? impl.invoice_asset : '',
+        invoice_currency: typeof impl.invoice_currency === 'string' ? impl.invoice_currency : '',
+        invoice_amount_rule: typeof impl.invoice_amount_rule === 'string' ? impl.invoice_amount_rule : '',
+        payout_network: typeof impl.payout_network === 'string' ? impl.payout_network : '',
+      }));
+    }
+  } catch {
+    // content may not be valid JSON
+  }
+
   // Fallback to tags for networks
   if (networks.length === 0) {
     networks = getAllTag('network');
@@ -406,6 +460,8 @@ export function parsePontmoreEscrow(event: {
     custodyAuthority,
     releaseAuthority,
     refundAuthority,
+    service,
+    implementations,
   };
 }
 
