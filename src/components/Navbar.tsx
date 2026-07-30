@@ -123,17 +123,6 @@ export function Footer() {
             <Shield className="h-4 w-4" />
             <span>Secured by Nostr &amp; Lightning</span>
           </div>
-          <div className="flex items-center gap-1">
-            <span>Vibed with</span>
-            <a
-              href="https://shakespeare.diy"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium text-foreground hover:text-primary transition-colors"
-            >
-              Shakespeare
-            </a>
-          </div>
         </div>
       </div>
     </footer>

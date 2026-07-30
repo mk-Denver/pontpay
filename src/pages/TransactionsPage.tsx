@@ -18,6 +18,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   Search,
+  Send,
   Trash2,
   Filter,
   Loader2,
@@ -59,14 +60,14 @@ import { useSwapMessages, type SwapPayloadType, type SwapMessage } from '@/hooks
 import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { formatSats, type SwapState, type PontmoreSwap } from '@/lib/pontmore';
 
-type TxFilter = 'all' | 'deposit' | 'withdrawal';
+type TxFilter = 'all' | 'buy' | 'sell';
 
 // ─── State helpers (shared with AgentInboxPage) ──────────────────
 
 const STATE_LABELS: Record<SwapState, string> = {
   requested: 'Requested',
   accepted: 'Accepted',
-  fiat_exchanged: 'Cash Exchanged',
+  fiat_exchanged: 'Fiat Sent',
   lightning_settled: 'BTC Settled',
   completed: 'Completed',
   cancelled: 'Cancelled',
@@ -77,10 +78,10 @@ const STATE_LABELS: Record<SwapState, string> = {
 /** Context-aware state label for the progress bar. */
 function stateFlowLabel(state: SwapState, swapType: string): string {
   if (state === 'fiat_exchanged') {
-    return swapType === 'deposit' ? 'Cash Given' : 'Cash Received';
+    return swapType === 'buy' ? 'Fiat Sent' : 'Fiat Received';
   }
   if (state === 'lightning_settled') {
-    return swapType === 'deposit' ? 'BTC Received' : 'BTC Sent';
+    return swapType === 'buy' ? 'BTC Received' : 'BTC Settled';
   }
   return STATE_LABELS[state];
 }
@@ -199,7 +200,7 @@ export default function TransactionsPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Swap History</h1>
             <p className="mt-1 text-muted-foreground">
-              All your Pontmore swaps (in-person exchange).
+              All your Pontmore swaps (online swap).
             </p>
           </div>
           {localSwaps.length > 0 && (
@@ -288,8 +289,8 @@ export default function TransactionsPage() {
         <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {selectedSwap?.swapType === 'deposit' && <ArrowDownToLine className="h-5 w-5 text-green-600" />}
-              {selectedSwap?.swapType === 'withdrawal' && <ArrowUpFromLine className="h-5 w-5 text-orange-600" />}
+              {selectedSwap?.swapType === 'buy' && <ArrowDownToLine className="h-5 w-5 text-green-600" />}
+              {selectedSwap?.swapType === 'sell' && <ArrowUpFromLine className="h-5 w-5 text-orange-600" />}
               <span className="capitalize">{selectedSwap?.swapType}</span>
             </DialogTitle>
             <DialogDescription>
@@ -327,7 +328,7 @@ function localToSwap(local: LocalSwapRecord): PontmoreSwap {
 // ─── Swap Row ────────────────────────────────────────────────────
 
 function SwapRow({ swap, onClick }: { swap: PontmoreSwap; onClick: () => void }) {
-  const Icon = swap.swapType === 'deposit' ? ArrowDownToLine : ArrowUpFromLine;
+  const Icon = swap.swapType === 'buy' ? ArrowDownToLine : ArrowUpFromLine;
   const statusClass = STATE_COLORS[swap.state];
 
   return (
@@ -489,16 +490,16 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
         )}
       </div>
 
-      {/* Lightning payment — for withdrawals, customer pays agent's invoice at kiosk */}
-      {swap.swapType === 'withdrawal' && swap.state === 'accepted' && (
+      {/* Lightning payment — for withdrawals, customer pays agent's invoice online */}
+      {swap.swapType === 'sell' && swap.state === 'accepted' && (
         <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-4">
           <p className="mb-3 text-sm font-medium flex items-center gap-2">
-            <Zap className="h-4 w-4 text-orange-600" /> Pay at the kiosk
+            <Zap className="h-4 w-4 text-orange-600" /> Pay online
           </p>
           {agentInvoice ? (
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">
-                The agent sent you a Lightning invoice. Visit the kiosk and pay
+                The agent sent you a Lightning invoice. Complete online and pay
                 it from your wallet to send BTC. The agent will then hand you
                 cash.
               </p>
@@ -520,14 +521,14 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
           ) : (
             <p className="text-xs text-muted-foreground">
               Waiting for the agent to generate a Lightning invoice. Visit the
-              kiosk — the agent will send it to you when you arrive.
+              online — the agent will send it to you when you arrive.
             </p>
           )}
         </div>
       )}
 
       {/* Deposit status — customer handed cash, waiting for agent to pay invoice */}
-      {swap.swapType === 'deposit' && swap.state === 'accepted' && (
+      {swap.swapType === 'buy' && swap.state === 'accepted' && (
         <div className="rounded-lg border border-green-500/20 bg-green-500/5 p-4">
           <p className="text-sm font-medium flex items-center gap-2">
             <Clock className="h-4 w-4 text-green-600" /> At the kiosk
@@ -541,7 +542,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
       )}
 
       {/* Deposit — cash exchanged, waiting for Lightning */}
-      {swap.swapType === 'deposit' && swap.state === 'fiat_exchanged' && (
+      {swap.swapType === 'buy' && swap.state === 'fiat_exchanged' && (
         <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
           <p className="text-sm font-medium flex items-center gap-2">
             <Clock className="h-4 w-4 text-blue-600" /> Cash received by agent

@@ -36,6 +36,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useAgents } from '@/hooks/useAgents';
 import { useAgentRegistration } from '@/hooks/useAgentRegistration';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { RelaySelector, useDiscoveryRelays } from '@/components/RelaySelector';
 import { formatSats } from '@/lib/pontmore';
 
 const CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
@@ -46,6 +47,7 @@ export default function AgentsPage() {
 
   const { user } = useCurrentUser();
   const { myAgent, isRegistered } = useAgentRegistration();
+  const { selectedRelays } = useDiscoveryRelays();
 
   const filters = useMemo(
     () => ({
@@ -55,7 +57,7 @@ export default function AgentsPage() {
     [search, currency],
   );
 
-  const { agents, allAgents, isLoading } = useAgents(filters);
+  const { agents, allAgents, isLoading } = useAgents(filters, selectedRelays);
 
   // Directory stats
   const stats = useMemo(() => {
@@ -172,6 +174,9 @@ export default function AgentsPage() {
             </Select>
           </div>
         </div>
+
+        {/* Relay selector */}
+        <RelaySelector />
 
         {/* Agent list */}
         {isLoading ? (

@@ -21,13 +21,19 @@ export interface UseAgentsFilters {
   region?: string;
 }
 
-export function useAgents(filters?: UseAgentsFilters) {
+export function useAgents(filters?: UseAgentsFilters, relays?: string[]) {
   const { nostr } = useNostr();
 
+  const relayKey = relays?.slice().sort().join(',') ?? 'pool';
+
   const { data: agents, ...query } = useQuery<PontmoreAgent[], Error>({
-    queryKey: ['pontmore', 'agents'],
+    queryKey: ['pontmore', 'agents', relayKey],
     queryFn: async (c) => {
-      const events = await nostr.query(
+      const target = relays && relays.length > 0
+        ? nostr.group(relays)
+        : nostr;
+
+      const events = await target.query(
         [
           {
             kinds: [PONTMORE_AGENT_KIND],
@@ -43,7 +49,8 @@ export function useAgents(filters?: UseAgentsFilters) {
         .filter((a): a is PontmoreAgent => a !== null)
         .sort((a, b) => b.event.created_at - a.event.created_at);
     },
-    staleTime: 60_000,
+    staleTime: Infinity,
+    refetchOnMount: false,
   });
 
   const filteredAgents = useMemo(() => {
@@ -108,6 +115,7 @@ export function useAgent(pubkey: string | undefined) {
       return parsePontmoreAgent(event);
     },
     enabled: !!pubkey,
-    staleTime: 60_000,
+    staleTime: Infinity,
+    refetchOnMount: false,
   });
 }

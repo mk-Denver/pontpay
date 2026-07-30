@@ -52,8 +52,8 @@ import { formatSats } from '@/lib/pontmore';
 import type { AgentCapabilities } from '@/lib/pontmore';
 
 const ALL_CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
-const SWAP_TYPES = ['deposit', 'withdrawal', 'transfer'];
-const PAYMENT_CHANNELS = ['cash', 'bank_transfer', 'mobile_money', 'm_pesa', 'ach', 'sepa'];
+const SWAP_TYPES = ['buy', 'sell'];
+const PAYMENT_CHANNELS = ['bank_transfer', 'mobile_money', 'm_pesa', 'ach', 'sepa', 'paypal'];
 const SETTLEMENT_NETWORKS = ['lightning', 'bitcoin'];
 const REGIONS = [
   'East Africa', 'West Africa', 'Southern Africa', 'North Africa',
@@ -66,7 +66,7 @@ function defaultInput(): AgentRegistrationInput {
     name: '',
     about: '',
     capabilities: {
-      swapTypes: ['deposit', 'withdrawal'],
+      swapTypes: ['buy', 'sell'],
       fiatCurrencies: [],
       paymentChannels: ['cash', 'mobile_money'],
       settlementNetworks: ['lightning'],
@@ -78,6 +78,8 @@ function defaultInput(): AgentRegistrationInput {
     pricingPolicy: 'percentage_margin',
     fiatCurrencies: [],
     relays: [],
+    escrowDTag: 'escrow',
+    escrowSummary: 'custodial_escrow',
   };
 }
 
@@ -491,8 +493,9 @@ export default function AgentRegistrationPage() {
                 Your agent definition is published as a Nostr addressable event
                 (kind 30360), signed by your Nostr identity and stored on
                 decentralized relays. Users discover you via the Pontmore agent
-                directory. PontPay uses an in-person exchange model — no escrow
-                is required. You can update or delete your listing at any time.
+                directory. PontPay uses an online escrow-backed swap model —
+                swaps are secured by a PIP-01 escrow service. You can update or
+                delete your listing at any time.
               </p>
             </div>
           </div>

@@ -53,9 +53,9 @@ const STEPS = [
   },
   {
     icon: Store,
-    title: 'Find an agent kiosk',
+    title: 'Find an agent network',
     description:
-      'Browse the decentralized agent directory. Agents operate kiosks where you can deposit cash for BTC or withdraw BTC for cash.',
+      'Browse the decentralized agent directory. Agents operate kiosks where you can swap Bitcoin for fiat online.',
   },
   {
     icon: Send,
@@ -71,7 +71,7 @@ export default function Index() {
   useSeoMeta({
     title: 'PontPay — Lightning Agent Network | Cross-Border Payments on Nostr',
     description:
-      'An M-Pesa-style agent network powered by Bitcoin Lightning and the Pontmore protocol. Deposit, withdraw, and transfer instantly with ultra-low fees.',
+      'An M-Pesa-style agent network powered by Bitcoin Lightning and the Pontmore protocol. Swap Bitcoin for fiat instantly with ultra-low fees.',
   });
 
   return (
@@ -119,7 +119,7 @@ export default function Index() {
               Powered by the Pontmore Protocol
             </div>
             <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl">
-              The agent kiosk network for{' '}
+              The agent network network for{' '}
               <span className="bg-gradient-to-r from-orange-500 to-amber-600 bg-clip-text text-transparent">
                 borderless Bitcoin
               </span>{' '}
@@ -127,7 +127,7 @@ export default function Index() {
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground sm:text-xl">
               An M-Pesa-style agent network built on Bitcoin Lightning and Nostr.
-              Walk into a kiosk, hand over cash, and receive Bitcoin instantly —
+              Swap Bitcoin for your local currency online —
               or pay a Lightning invoice and walk away with cash.
             </p>
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
@@ -331,7 +331,7 @@ export default function Index() {
               Ready to move money differently?
             </h2>
             <p className="mx-auto mt-4 max-w-xl text-lg text-white/90">
-              Join the Pontmore agent network. Deposit, withdraw, and transfer
+              Join the Pontmore agent network. Swap Bitcoin for fiat
               Bitcoin with the speed of Lightning.
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">

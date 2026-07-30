@@ -140,10 +140,10 @@ export interface PontmoreEscrowImplementation {
 // ─── PIP-02: Swap State Machine Types ───────────────────────────
 
 /** Swap types supported by the Pontmore protocol. */
-export type SwapType = 'deposit' | 'withdrawal' | 'transfer';
+export type SwapType = 'buy' | 'sell';
 
 /**
- * Swap state lifecycle for in-person agent network (no escrow).
+ * Swap state lifecycle for online agent escrow swaps.
  *
  * Deposit (fiat → BTC):  requested → accepted → fiat_exchanged → lightning_settled → completed
  * Withdrawal (BTC → fiat): requested → accepted → lightning_settled → fiat_exchanged → completed
@@ -527,17 +527,17 @@ export function parseSwapSnapshot(event: {
 
 /** Build swap state machine events from raw Nostr events. */
 export function buildSwapFromEvents(
-  requestEvent: { id: string; pubkey: string; content: string; created_at: number },
-  transitionEvents: { id: string; content: string; created_at: number }[],
-  evidenceEvents: { id: string; content: string; created_at: number }[],
+  requestEvent: { id: string; pubkey: string; content: string; created_at: number; tags?: string[][] },
+  transitionEvents: { id: string; content: string; created_at: number; tags?: string[][] }[],
+  evidenceEvents: { id: string; content: string; created_at: number; tags?: string[][] }[],
   myPubkey: string,
 ): PontmoreSwap | null {
-  const request = parseSwapRequest(requestEvent);
+  const request = parseSwapRequest({ content: requestEvent.content, tags: requestEvent.tags ?? [] });
   if (!request) return null;
 
   const transitions = transitionEvents
     .map((e) => {
-      const t = parseSwapTransition(e);
+      const t = parseSwapTransition({ content: e.content, tags: e.tags ?? [] });
       return t ? {
         state: t.state,
         prevState: t.prev_state,

@@ -19,10 +19,13 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useEscrowDiscovery } from '@/hooks/useEscrowDiscovery';
 import { useEscrowConnection } from '@/hooks/useEscrowConnection';
+import { RelaySelector, useDiscoveryRelays } from '@/components/RelaySelector';
 
 export default function EscrowPage() {
   const { user } = useCurrentUser();
-  const { escrows, standaloneEscrows, isLoading, refetch } = useEscrowDiscovery();
+  const { selectedRelays } = useDiscoveryRelays();
+
+  const { escrows, isLoading, refetch } = useEscrowDiscovery(selectedRelays);
   const { connection, isConnected, connect, disconnect } = useEscrowConnection();
 
   useSeoMeta({
@@ -77,9 +80,7 @@ export default function EscrowPage() {
               <CheckCircle2 className="h-5 w-5 text-green-600" />
               <div className="flex-1">
                 <p className="text-sm font-medium text-green-600">Connected to escrow</p>
-                <p className="text-sm text-muted-foreground font-mono text-xs">
-                  {connection.endpoint}
-                </p>
+                <p className="text-sm text-muted-foreground font-mono text-xs">{connection.endpoint}</p>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   <Badge variant="secondary" className="text-xs">{connection.escrowType}</Badge>
                   <Badge variant="outline" className="text-xs">{connection.fundingModel}</Badge>
@@ -109,10 +110,13 @@ export default function EscrowPage() {
           </Card>
         )}
 
-        {/* Refresh button */}
+        {/* Relay selector */}
+        <RelaySelector />
+
+        {/* Refresh + heading */}
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Discovered Escrows</h2>
-          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isLoading}>
+          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isLoading || selectedRelays.length === 0}>
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             Refresh
           </Button>
@@ -129,8 +133,12 @@ export default function EscrowPage() {
           <Card className="border-dashed">
             <CardContent className="py-12 px-8 text-center">
               <p className="text-sm text-muted-foreground">
-                No escrow descriptors found on Nostr. Try refreshing, or{' '}
-                <Link to="/register-agent" className="underline">publish your own</Link>.
+                {selectedRelays.length === 0
+                  ? 'Select at least one relay above to discover escrows.'
+                  : 'No escrow descriptors found on the selected relays. Try different relays, or '}
+                {selectedRelays.length > 0 && (
+                  <><Link to="/register-agent" className="underline">publish your own</Link>.</>
+                )}
               </p>
             </CardContent>
           </Card>
@@ -146,9 +154,7 @@ export default function EscrowPage() {
                       <div className="min-w-0 flex-1 space-y-2">
                         <div className="flex items-center gap-2">
                           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-                          <p className="font-medium text-sm">
-                            {escrow.escrowType || 'Unknown escrow type'}
-                          </p>
+                          <p className="font-medium text-sm">{escrow.escrowType || 'Unknown escrow type'}</p>
                           {hasService ? (
                             <Badge className="bg-green-500/10 text-green-600 border-green-500/20 text-xs">
                               <Globe className="mr-1 h-3 w-3" /> Standalone
@@ -158,26 +164,21 @@ export default function EscrowPage() {
                           )}
                         </div>
 
-                        <p className="text-xs text-muted-foreground font-mono">
-                          {escrow.event.pubkey.slice(0, 20)}…
-                        </p>
+                        <p className="text-xs text-muted-foreground font-mono">{escrow.event.pubkey.slice(0, 20)}…</p>
 
                         {hasService && escrow.service && (
-                          <div className="flex flex-wrap gap-1.5">
-                            <Badge variant="outline" className="text-xs">{escrow.service.funding_model}</Badge>
-                            {escrow.service.auth.map((a) => (
-                              <Badge key={a} variant="outline" className="text-xs">{a}</Badge>
-                            ))}
-                            {escrow.service.operations.map((op) => (
-                              <Badge key={op} variant="secondary" className="text-xs">{op}</Badge>
-                            ))}
-                          </div>
-                        )}
-
-                        {hasService && escrow.service && (
-                          <p className="text-xs text-muted-foreground font-mono truncate">
-                            {escrow.service.endpoint}
-                          </p>
+                          <>
+                            <div className="flex flex-wrap gap-1.5">
+                              <Badge variant="outline" className="text-xs">{escrow.service.funding_model}</Badge>
+                              {escrow.service.auth.map((a) => (
+                                <Badge key={a} variant="outline" className="text-xs">{a}</Badge>
+                              ))}
+                              {escrow.service.operations.map((op) => (
+                                <Badge key={op} variant="secondary" className="text-xs">{op}</Badge>
+                              ))}
+                            </div>
+                            <p className="text-xs text-muted-foreground font-mono truncate">{escrow.service.endpoint}</p>
+                          </>
                         )}
 
                         <div className="flex flex-wrap gap-1.5">
@@ -217,13 +218,9 @@ export default function EscrowPage() {
               <ArrowRight className="h-5 w-5 text-blue-600" />
               <div className="flex-1 text-sm">
                 <p className="font-medium text-blue-600">Ready to transact</p>
-                <p className="text-muted-foreground">
-                  Your swap requests will use this escrow service for custody and settlement.
-                </p>
+                <p className="text-muted-foreground">Your swap requests will use this escrow service for custody and settlement.</p>
               </div>
-              <Button asChild size="sm">
-                <Link to="/dashboard">Go to Dashboard</Link>
-              </Button>
+              <Button asChild size="sm"><Link to="/dashboard">Go to Dashboard</Link></Button>
             </CardContent>
           </Card>
         )}

@@ -49,8 +49,8 @@ export function useLightningWallet() {
       const provider = createProvider(connectionString);
       if (!provider) return 0;
       await provider.enable?.();
-      const result = await provider.getBalance();
-      return result.balance;
+      const result = await provider.getBalance?.();
+      return result?.balance ?? 0;
     },
     enabled: !!connectionString,
     refetchInterval: 30000,
@@ -82,11 +82,11 @@ export function useLightningWallet() {
         await provider.enable?.();
         const result = await provider.makeInvoice({
           amount: amountSats,
-          defaultMemo: memo ?? 'Pontmore deposit',
+          defaultMemo: memo ?? 'Pontmore swap',
         });
         return {
           invoice: result.paymentRequest,
-          paymentHash: result.paymentHash,
+          paymentHash: (result as { paymentHash?: string }).paymentHash ?? '',
         };
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Unknown error';

@@ -1,5 +1,5 @@
 /**
- * AgentInboxPage — the agent-side swap management UI for in-person swaps.
+ * AgentInboxPage — the agent-side swap management UI for online swaps.
  *
  * Shows incoming swap requests directed at the current user (as the tagged
  * agent on kind 7300). The agent can:
@@ -93,15 +93,15 @@ interface SwapAction {
  */
 function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
   const actions: SwapAction[] = [];
-  const isDeposit = swapType === 'deposit';
-  const isWithdrawal = swapType === 'withdrawal';
+  const isDeposit = swapType === 'buy';
+  const isWithdrawal = swapType === 'sell';
 
   switch (state) {
     case 'requested':
       actions.push({
         label: 'Accept',
         nextState: 'accepted',
-        reason: 'Agent accepted the swap — customer can visit the kiosk',
+        reason: 'Agent accepted the swap — customer can complete online',
         variant: 'default',
         icon: Check,
       });
@@ -120,7 +120,7 @@ function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
         actions.push({
           label: 'Cash received',
           nextState: 'fiat_exchanged',
-          reason: 'Agent confirms cash received from customer at kiosk',
+          reason: 'Agent confirms cash received from customer online',
           variant: 'outline',
           icon: CheckCircle2,
         });
@@ -153,7 +153,7 @@ function getAgentActions(state: SwapState, swapType: string): SwapAction[] {
         actions.push({
           label: 'Cash paid out',
           nextState: 'fiat_exchanged',
-          reason: 'Agent handed cash to customer at kiosk',
+          reason: 'Agent handed cash to customer online',
           variant: 'default',
           icon: CheckCircle2,
         });
@@ -215,10 +215,10 @@ const TERMINAL_STATES: SwapState[] = ['cancelled', 'disputed', 'expired'];
 /** Context-aware state flow label for the progress bar. */
 function stateFlowLabel(state: SwapState, swapType: string): string {
   if (state === 'fiat_exchanged') {
-    return swapType === 'deposit' ? 'Cash Received' : 'Cash Paid Out';
+    return swapType === 'buy' ? 'Fiat Received' : 'Fiat Paid Out';
   }
   if (state === 'lightning_settled') {
-    return swapType === 'deposit' ? 'BTC Sent' : 'BTC Received';
+    return swapType === 'buy' ? 'BTC Settled' : 'BTC Received';
   }
   return STATE_LABELS[state];
 }
@@ -226,7 +226,7 @@ function stateFlowLabel(state: SwapState, swapType: string): string {
 const STATE_LABELS: Record<SwapState, string> = {
   requested: 'Requested',
   accepted: 'Accepted',
-  fiat_exchanged: 'Cash Exchanged',
+  fiat_exchanged: 'Fiat Sent',
   lightning_settled: 'BTC Settled',
   completed: 'Completed',
   cancelled: 'Cancelled',
@@ -302,7 +302,7 @@ export default function AgentInboxPage() {
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Agent Inbox</h1>
           <p className="mt-1 text-muted-foreground">
-            Incoming swap requests from customers at your kiosk.
+            Incoming swap requests from customers online.
           </p>
         </div>
 
@@ -349,12 +349,12 @@ export default function AgentInboxPage() {
         <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {selectedSwap?.swapType === 'deposit' && <ArrowDownToLine className="h-5 w-5 text-green-600" />}
-              {selectedSwap?.swapType === 'withdrawal' && <ArrowUpFromLine className="h-5 w-5 text-orange-600" />}
+              {selectedSwap?.swapType === 'buy' && <ArrowDownToLine className="h-5 w-5 text-green-600" />}
+              {selectedSwap?.swapType === 'sell' && <ArrowUpFromLine className="h-5 w-5 text-orange-600" />}
               <span className="capitalize">{selectedSwap?.swapType} request</span>
             </DialogTitle>
             <DialogDescription>
-              Manage this in-person swap — advance the state machine and exchange details.
+              Manage this online swap — advance the state machine and exchange details.
             </DialogDescription>
           </DialogHeader>
           {selectedSwap && <SwapDetailPanel swap={selectedSwap} />}
@@ -367,7 +367,7 @@ export default function AgentInboxPage() {
 // ─── Swap Request Card ───────────────────────────────────────────
 
 function SwapRequestCard({ swap, onClick }: { swap: PontmoreSwap; onClick: () => void }) {
-  const Icon = swap.swapType === 'deposit' ? ArrowDownToLine : swap.swapType === 'withdrawal' ? ArrowUpFromLine : Send;
+  const Icon = swap.swapType === 'buy' ? ArrowDownToLine : swap.swapType === 'sell' ? ArrowUpFromLine : Send;
   const { data: authorData } = useAuthor(swap.customerPubkey);
   const customerName = authorData?.metadata?.name ?? `${swap.customerPubkey.slice(0, 12)}...`;
 
@@ -529,7 +529,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
             <Zap className="h-4 w-4" /> Lightning payment
           </p>
 
-          {swap.swapType === 'deposit' && (
+          {swap.swapType === 'buy' && (
             <div>
               {customerInvoice ? (
                 <div className="space-y-2">
@@ -563,12 +563,12 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
             </div>
           )}
 
-          {swap.swapType === 'withdrawal' && (
+          {swap.swapType === 'sell' && (
             <div>
               {hasSentInvoice ? (
                 <p className="text-xs text-green-600 flex items-center gap-1.5">
                   <CheckCircle2 className="h-4 w-4" /> Invoice sent to customer.
-                  They'll pay it at the kiosk. Confirm once the Lightning
+                  They'll pay it online. Confirm once the Lightning
                   payment arrives.
                 </p>
               ) : hasWallet ? (
@@ -576,7 +576,7 @@ function SwapDetailPanel({ swap }: { swap: PontmoreSwap }) {
                   <p className="text-xs text-muted-foreground">
                     Generate a Lightning invoice for the customer to pay
                     ({formatSats(swap.bitcoinAmountSats)}). They'll pay it when
-                    they arrive at the kiosk.
+                    they arrive online.
                   </p>
                   <Button onClick={handleGenerateAndSendInvoice} disabled={generatingInvoice || isCreatingInvoice} size="sm" className="w-full">
                     {generatingInvoice || isCreatingInvoice ? (

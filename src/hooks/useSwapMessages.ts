@@ -30,8 +30,8 @@ import type { NostrEvent } from '@nostrify/nostrify';
 
 /** Types of sensitive payloads exchanged in the private lane. */
 export type SwapPayloadType =
-  | 'invoice'           // Lightning invoice (deposit: customer → agent)
-  | 'bank_details'      // Bank/payment instructions (withdrawal: customer → agent)
+  | 'invoice'           // Lightning invoice (buy: customer receives BTC)
+  | 'bank_details'      // Payout/payment instructions (sell: customer → agent)
   | 'payout_confirmation' // Agent confirms fiat payout sent
   | 'payment_proof'     // Proof of payment (receipt, tx hash, etc.)
   | 'message';          // Freeform operational note

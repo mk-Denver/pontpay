@@ -17,7 +17,6 @@ import {
   Check,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
-import { WalletModal } from '@/components/WalletModal';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -25,15 +24,20 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
+import { useNWC } from '@/hooks/useNWCContext';
 import { formatSats } from '@/lib/pontmore';
 import { QRCodeCanvas } from '@/components/ui/qrcode';
 
 export default function WalletPage() {
   const { user } = useCurrentUser();
   const unified = useUnifiedWallet();
+  const { addConnection } = useNWC();
   const [showConnect, setShowConnect] = useState(false);
 
   useSeoMeta({ title: 'Wallet — PontPay', description: 'Manage your Lightning wallet.' });
@@ -106,9 +110,34 @@ export default function WalletPage() {
           </Tabs>
         )}
 
-        {showConnect && <WalletModal onClose={() => setShowConnect(false)} />}
+        {showConnect && (
+          <NwcConnectDialog
+            onClose={() => setShowConnect(false)}
+            onConnect={(alias, uri) => { addConnection(uri, alias); setShowConnect(false); }}
+          />
+        )}
       </div>
     </AppLayout>
+  );
+}
+
+function NwcConnectDialog({ onClose, onConnect }: { onClose: () => void; onConnect: (alias: string, uri: string) => void }) {
+  const [alias, setAlias] = useState('');
+  const [uri, setUri] = useState('');
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Connect Lightning Wallet</DialogTitle>
+          <DialogDescription>Connect via Nostr Wallet Connect (NIP-47).</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div><Label>Wallet name (optional)</Label><Input placeholder="My Alby Hub" value={alias} onChange={(e) => setAlias(e.target.value)} /></div>
+          <div><Label>NWC connection URI</Label><Input type="password" placeholder="nostr+walletconnect://..." value={uri} onChange={(e) => setUri(e.target.value)} /></div>
+          <Button onClick={() => onConnect(alias || 'NWC Wallet', uri)} disabled={!uri.trim()} className="w-full"><Zap className="h-4 w-4" /> Connect</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

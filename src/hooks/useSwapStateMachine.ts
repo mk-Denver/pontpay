@@ -88,7 +88,7 @@ export function useSwapStateMachine() {
 
   /**
    * Publish a swap request (kind 7300) — the immutable root event.
-   * This initiates a deposit, withdrawal, or P2P transfer.
+   * This initiates a buy or sell swap.
    */
   const publishSwapRequest = useMutation({
     mutationFn: async (params: {
@@ -97,7 +97,7 @@ export function useSwapStateMachine() {
       amountSats: number;
       fiatAmount: number;
       fiatCurrency: string;
-      escrowReference?: string;
+      escrowReference: string;
       expirySeconds?: number;
     }): Promise<string> => {
       if (!myPubkey) throw new Error('Not logged in');
@@ -111,7 +111,7 @@ export function useSwapStateMachine() {
         swap_type: params.swapType,
         agent: params.agentPubkey,
         customer: myPubkey,
-        escrow_reference: params.escrowReference ?? 'in_person',
+        escrow_reference: params.escrowReference,
         fiat: {
           currency: params.fiatCurrency,
           amount: params.fiatAmount,
@@ -142,7 +142,7 @@ export function useSwapStateMachine() {
         amountSats: params.amountSats,
         fiatAmount: params.fiatAmount,
         fiatCurrency: params.fiatCurrency,
-        escrowReference: params.escrowReference ?? 'in_person',
+        escrowReference: params.escrowReference,
         state: 'requested',
         createdAt: event.created_at,
         updatedAt: event.created_at,
@@ -151,7 +151,10 @@ export function useSwapStateMachine() {
       });
 
       // Publish initial snapshot (kind 30362)
-      await publishSnapshot(swapId, 'requested', params, event.created_at);
+      await publishSnapshot(swapId, 'requested', {
+        ...params,
+        escrowReference: params.escrowReference,
+      }, event.created_at);
 
       return swapId;
     },
@@ -198,7 +201,7 @@ export function useSwapStateMachine() {
         bitcoin_amount_sats: params.amountSats,
         fiat_amount: params.fiatAmount,
         fiat_currency: params.fiatCurrency,
-        escrow_reference: params.escrowReference || 'in_person',
+        escrow_reference: params.escrowReference,
         updated_at: Math.floor(Date.now() / 1000),
       };
 

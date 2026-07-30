@@ -24,6 +24,7 @@ import { useToast } from '@/hooks/useToast';
 import {
   PONTMORE_AGENT_KIND,
   PONTMORE_AGENT_TAG,
+  PONTMORE_ESCROW_KIND,
   parsePontmoreAgent,
   type PontmoreAgent,
   type AgentCapabilities,
@@ -45,6 +46,11 @@ export interface AgentRegistrationInput {
   fiatCurrencies: string[];
   /** Relay URLs the agent is reachable on (emitted as `relay` tags). */
   relays: string[];
+  /** Escrow descriptor d-tag (e.g. "escrow"). The agent publishes its own
+   * kind 30361 escrow descriptor and references it via an `a` tag. */
+  escrowDTag: string;
+  /** Escrow summary text for the content.escrow field (PIP-00). */
+  escrowSummary: string;
 }
 
 /** Build the JSON content for a kind 30360 event (PIP-00). */
@@ -64,17 +70,19 @@ function buildAgentContent(input: AgentRegistrationInput): string {
       pricing_margin: input.capabilities.pricingMargin,
     },
     pricing_policy: input.pricingPolicy,
-    exchange_mode: 'in_person',
+    escrow: input.escrowSummary || 'custodial_escrow',
     updated_at: Math.floor(Date.now() / 1000),
   });
 }
 
 /** Build the tag array for a kind 30360 event (PIP-00). */
-function buildAgentTags(input: AgentRegistrationInput): string[][] {
+function buildAgentTags(input: AgentRegistrationInput, pubkey: string): string[][] {
   const tags: string[][] = [
     ['d', input.identifier || 'agent'],
     ['t', PONTMORE_AGENT_TAG],
     ['alt', `Pontmore agent: ${input.name}`],
+    // PIP-00 required: 'a' tag referencing the default escrow descriptor (kind 30361)
+    ['a', `${PONTMORE_ESCROW_KIND}:${pubkey}:${input.escrowDTag || 'escrow'}`],
   ];
 
   // Relay tags (PIP-00 required)
@@ -130,9 +138,44 @@ export function useAgentRegistration() {
     mutationFn: async (input: AgentRegistrationInput) => {
       if (!myPubkey) throw new Error('Not logged in');
 
+      // Publish companion escrow descriptor (PIP-01, kind 30361) first
+      // so the agent's 'a' tag references a real event
+      const escrowContent = JSON.stringify({
+        version: 1,
+        escrow_type: 'custodial_escrow',
+        networks: ['lightning'],
+        funding_rules: { required_confirmation: 'invoice_paid' },
+        release_rules: {
+          release_trigger: 'application_signed_result',
+          refund_trigger: 'timeout_requires_mutual_consent',
+        },
+        dispute_rules: { policy: 'operator_resolved' },
+        reference_format: 'bolt11_or_custodial_escrow_reference',
+        custody_authority: 'escrow_operator',
+        release_authority: 'escrow_operator',
+        refund_authority: 'escrow_operator',
+        implementations: [{
+          network: 'lightning',
+          invoice_asset: 'BTC',
+          invoice_currency: 'sats',
+          invoice_amount_rule: 'exact',
+          payout_network: 'lightning',
+        }],
+        updated_at: Math.floor(Date.now() / 1000),
+      });
+
+      await publishEvent({
+        kind: PONTMORE_ESCROW_KIND,
+        content: escrowContent,
+        tags: [
+          ['d', input.escrowDTag || 'escrow'],
+          ['network', 'lightning'],
+        ],
+      });
+
       // Publish the agent definition (PIP-00)
       const content = buildAgentContent(input);
-      const tags = buildAgentTags(input);
+      const tags = buildAgentTags(input, myPubkey);
 
       const event = await publishEvent({
         kind: PONTMORE_AGENT_KIND,
@@ -205,6 +248,8 @@ export function useAgentRegistration() {
         pricingPolicy: agent.pricingPolicy,
         fiatCurrencies: agent.fiatCurrencies,
         relays: agent.relays,
+        escrowDTag: 'escrow',
+        escrowSummary: agent.escrowSummary || 'custodial_escrow',
       };
     },
     [],
