@@ -17,6 +17,8 @@ import {
   X,
   MapPin,
   Coins,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Input } from '@/components/ui/input';
@@ -57,7 +59,7 @@ export default function AgentsPage() {
     [search, currency],
   );
 
-  const { agents, allAgents, isLoading } = useAgents(filters, selectedRelays);
+  const { agents, allAgents, isLoading, refetch, isFetching } = useAgents(filters, selectedRelays);
 
   // Directory stats
   const stats = useMemo(() => {
@@ -99,17 +101,23 @@ export default function AgentsPage() {
                 swaps. Discoverable on Nostr, available worldwide.
               </p>
             </div>
-            {user && (
-              <Button asChild className="shrink-0">
-                <Link to="/register-agent">
-                  {isRegistered ? (
-                    <><Pencil className="h-4 w-4" /> Edit my listing</>
-                  ) : (
-                    <><Plus className="h-4 w-4" /> Become an agent</>
-                  )}
-                </Link>
+            <div className="flex items-center gap-3">
+              <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching || isLoading}>
+                {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Refresh
               </Button>
-            )}
+              {user && (
+                <Button asChild className="shrink-0">
+                  <Link to="/register-agent">
+                    {isRegistered ? (
+                      <><Pencil className="h-4 w-4" /> Edit my listing</>
+                    ) : (
+                      <><Plus className="h-4 w-4" /> Become an agent</>
+                    )}
+                  </Link>
+                </Button>
+              )}
+            </div>
           </div>
         </div>
 
