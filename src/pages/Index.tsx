@@ -13,6 +13,9 @@ import {
   Send,
   Lock,
   Network,
+  ShieldCheck,
+  Repeat2,
+  ScrollText,
 } from 'lucide-react';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -22,56 +25,63 @@ const FEATURES = [
     icon: TrendingDown,
     title: 'Ultra-low fees',
     description:
-      'Lightning Network routing means cross-border transfers cost a fraction of traditional remittance services.',
+      'Lightning Network routing means Bitcoin ↔ fiat swaps cost a fraction of traditional remittance and exchange services.',
   },
   {
     icon: Zap,
     title: 'Instant finality',
     description:
-      'Payments settle in milliseconds. No waiting days for bank clearing — your money moves at the speed of light.',
+      'Payments settle in milliseconds on Lightning. No waiting days for bank clearing — your money moves at the speed of light.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Escrow-secured',
+    description:
+      'Every swap is held by a standalone escrow service until both sides meet their conditions. Funds never sit unprotected.',
   },
   {
     icon: Globe,
     title: 'Borderless by design',
     description:
-      'Send value anywhere on Earth. No correspondent banks, no intermediary holds, no geographic restrictions.',
-  },
-  {
-    icon: Shield,
-    title: 'Self-custodial & secure',
-    description:
-      'Your keys, your Bitcoin. Nostr identity + Lightning wallets mean you always control your funds.',
+      'Swap Bitcoin for your local currency online — USD, KES, UGX, NGN, GHS, TZS and more. No correspondent banks, no geographic holds.',
   },
 ];
 
 const STEPS = [
   {
     icon: Wallet,
-    title: 'Connect your wallet',
+    title: 'Connect a wallet & escrow',
     description:
-      'Link a Lightning wallet via NWC or create an in-browser ecash wallet. Your Bitcoin is always self-custodial.',
+      'Link a Lightning wallet via NWC (NIP-47), then connect an escrow service discovered on Nostr. Your keys never leave the browser.',
   },
   {
     icon: Store,
-    title: 'Find an agent network',
+    title: 'Find an agent',
     description:
-      'Browse the decentralized agent directory. Agents operate kiosks where you can swap Bitcoin for fiat online.',
+      'Browse the decentralized agent directory (kind 30360). Agents publish their supported currencies, capabilities, and escrow reference on Nostr.',
   },
   {
-    icon: Send,
-    title: 'Deposit or withdraw',
+    icon: Repeat2,
+    title: 'Swap BTC ↔ fiat',
     description:
-      'Hand cash to an agent and receive Bitcoin instantly. Or pay the agent\'s Lightning invoice and walk away with cash.',
+      'Choose Buy or Sell, pick an agent, and publish a swap request. The escrow holds funds while you exchange fiat over an encrypted private lane — then Lightning settles instantly.',
   },
+];
+
+const PROTOCOL_POINTS = [
+  'Agent directory (kind 30360) + escrow descriptor (kind 30361)',
+  'Swap state machine: kinds 7300–7304, snapshots (30362)',
+  'Escrow HTTP API authenticated with NIP-98 (kind 27235)',
+  'Sensitive payloads encrypted via NIP-17 Gift Wrap',
 ];
 
 export default function Index() {
   const { user } = useCurrentUser();
 
   useSeoMeta({
-    title: 'PontPay — Lightning Agent Network | Cross-Border Payments on Nostr',
+    title: 'PontPay — Escrow-Secured Bitcoin ↔ Fiat Swaps on Nostr',
     description:
-      'An M-Pesa-style agent network powered by Bitcoin Lightning and the Pontmore protocol. Swap Bitcoin for fiat instantly with ultra-low fees.',
+      'Swap Bitcoin for your local currency online via the Pontmore agent network. Every swap is escrow-secured and settles instantly on the Lightning Network.',
   });
 
   return (
@@ -84,6 +94,7 @@ export default function Index() {
               <Zap className="h-5 w-5 text-white" fill="white" />
             </div>
             <span className="text-lg font-bold tracking-tight">PontPay</span>
+            <span className="hidden sm:inline text-xs text-muted-foreground">Pontmore</span>
           </div>
           <div className="flex items-center gap-3">
             <Link
@@ -91,6 +102,12 @@ export default function Index() {
               className="hidden sm:flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
             >
               <Store className="h-4 w-4" /> Agents
+            </Link>
+            <Link
+              to="/escrows"
+              className="hidden sm:flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ShieldCheck className="h-4 w-4" /> Escrows
             </Link>
             {user && (
               <Link
@@ -119,16 +136,16 @@ export default function Index() {
               Powered by the Pontmore Protocol
             </div>
             <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl">
-              The agent network network for{' '}
+              Escrow-secured{' '}
               <span className="bg-gradient-to-r from-orange-500 to-amber-600 bg-clip-text text-transparent">
-                borderless Bitcoin
+                Bitcoin ↔ fiat
               </span>{' '}
-              payments
+              swaps on Nostr
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground sm:text-xl">
-              An M-Pesa-style agent network built on Bitcoin Lightning and Nostr.
-              Swap Bitcoin for your local currency online —
-              or pay a Lightning invoice and walk away with cash.
+              Swap Bitcoin for your local currency online through a decentralized
+              agent network. Every trade is held by escrow until both sides
+              deliver — then settles instantly on the Lightning Network.
             </p>
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <LoginArea className="w-full sm:w-auto" />
@@ -145,7 +162,7 @@ export default function Index() {
             <div className="mt-12 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-muted-foreground">
               <span className="flex items-center gap-1.5">
                 <CheckCircle2 className="h-4 w-4 text-green-500" />
-                Instant settlement
+                Escrow-secured
               </span>
               <span className="flex items-center gap-1.5">
                 <CheckCircle2 className="h-4 w-4 text-green-500" />
@@ -153,7 +170,7 @@ export default function Index() {
               </span>
               <span className="flex items-center gap-1.5">
                 <CheckCircle2 className="h-4 w-4 text-green-500" />
-                End-to-end encrypted
+                Encrypted private lane
               </span>
               <span className="flex items-center gap-1.5">
                 <CheckCircle2 className="h-4 w-4 text-green-500" />
@@ -172,7 +189,7 @@ export default function Index() {
               How PontPay works
             </h2>
             <p className="mt-4 text-lg text-muted-foreground">
-              Three simple steps from sign-up to your first cross-border payment.
+              Three steps from sign-up to your first escrow-secured swap.
             </p>
           </div>
 
@@ -248,21 +265,18 @@ export default function Index() {
                 Nostr is the messaging layer.
                 <br />
                 Lightning is the settlement layer.
+                <br />
+                Escrow is the trust layer.
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Every transaction request, confirmation, and status update is
-                transmitted via Nostr relays using the Pontmore protocol —
-                end-to-end encrypted with NIP-44. Agents register on a
-                decentralized, censorship-resistant directory. Value settles
-                instantly on the Lightning Network.
+                Every swap is a Nostr-native state machine (PIP-02). Public
+                transitions are signed and immutable; sensitive payloads like
+                invoices and payout details travel an encrypted private lane
+                (NIP-17 Gift Wrap). A standalone escrow service holds funds
+                until both sides deliver, then Lightning settles instantly.
               </p>
               <ul className="mt-6 space-y-3">
-                {[
-                  'Encrypted transaction messages via NIP-17 / NIP-44',
-                  'Decentralized agent directory (kind 33939)',
-                  'Nostr Wallet Connect (NIP-47) for wallet control',
-                  'No central server — fully peer-to-peer',
-                ].map((item) => (
+                {PROTOCOL_POINTS.map((item) => (
                   <li key={item} className="flex items-start gap-3">
                     <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-500" />
                     <span className="text-sm">{item}</span>
@@ -285,10 +299,20 @@ export default function Index() {
                   <div className="flex justify-center">
                     <ArrowRight className="h-4 w-4 rotate-90 text-muted-foreground" />
                   </div>
+                  <div className="flex items-center justify-between rounded-xl bg-violet-500/5 p-4">
+                    <div className="flex items-center gap-3">
+                      <ShieldCheck className="h-5 w-5 text-violet-600" />
+                      <span className="text-sm font-medium">Escrow (PIP-01)</span>
+                    </div>
+                    <span className="text-xs text-muted-foreground">Holds funds</span>
+                  </div>
+                  <div className="flex justify-center">
+                    <ArrowRight className="h-4 w-4 rotate-90 text-muted-foreground" />
+                  </div>
                   <div className="flex items-center justify-between rounded-xl bg-blue-500/5 p-4">
                     <div className="flex items-center gap-3">
-                      <Network className="h-5 w-5 text-blue-600" />
-                      <span className="text-sm font-medium">Pontmore Protocol</span>
+                      <ScrollText className="h-5 w-5 text-blue-600" />
+                      <span className="text-sm font-medium">Swap state machine</span>
                     </div>
                     <span className="text-xs text-muted-foreground">Encrypted DMs</span>
                   </div>
@@ -328,11 +352,11 @@ export default function Index() {
               <div className="absolute -bottom-20 -left-20 h-64 w-64 rounded-full bg-white blur-3xl" />
             </div>
             <h2 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
-              Ready to move money differently?
+              Ready to swap money differently?
             </h2>
             <p className="mx-auto mt-4 max-w-xl text-lg text-white/90">
-              Join the Pontmore agent network. Swap Bitcoin for fiat
-              Bitcoin with the speed of Lightning.
+              Join the Pontmore agent network. Swap Bitcoin for fiat with
+              escrow-secured trades and Lightning-fast settlement.
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <LoginArea className="w-full sm:w-auto" />
@@ -354,7 +378,7 @@ export default function Index() {
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-muted-foreground">
             <div className="flex items-center gap-2">
               <Shield className="h-4 w-4" />
-              <span>Secured by Nostr &amp; Lightning</span>
+              <span>Secured by Nostr, Escrow &amp; Lightning</span>
             </div>
             <div className="flex items-center gap-1">
               <span>Vibed with</span>
