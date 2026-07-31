@@ -1,7 +1,7 @@
 {
   "name": "PontPay",
   "short_name": "PontPay",
-  "description": "Lightning agent network for cross-border Bitcoin payments",
+  "description": "Escrow-secured Bitcoin ↔ fiat swaps on Nostr — settle instantly on the Lightning Network.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
