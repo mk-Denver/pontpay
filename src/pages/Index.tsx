@@ -8,9 +8,7 @@ import {
   TrendingDown,
   ArrowRight,
   CheckCircle2,
-  Wallet,
   Store,
-  Send,
   Lock,
   Network,
   ShieldCheck,
@@ -49,10 +47,10 @@ const FEATURES = [
 
 const STEPS = [
   {
-    icon: Wallet,
-    title: 'Connect a wallet & escrow',
+    icon: ShieldCheck,
+    title: 'Connect an escrow',
     description:
-      'Link a Lightning wallet via NWC (NIP-47), then connect an escrow service discovered on Nostr. Your keys never leave the browser.',
+      'Connect an escrow service discovered on Nostr (kind 30361). It holds funds until both sides deliver. Your Nostr keys never leave the browser — no wallet needed to start.',
   },
   {
     icon: Store,
@@ -64,7 +62,7 @@ const STEPS = [
     icon: Repeat2,
     title: 'Swap BTC ↔ fiat',
     description:
-      'Choose Buy or Sell, pick an agent, and publish a swap request. The escrow holds funds while you exchange fiat over an encrypted private lane — then Lightning settles instantly.',
+      'Choose Buy or Sell, pick an agent, and publish a swap request. The escrow holds funds while you exchange fiat over an encrypted private lane — then Lightning settles instantly. Link a wallet anytime to receive payouts.',
   },
 ];
 

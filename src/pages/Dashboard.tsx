@@ -1,6 +1,6 @@
 import { useSeoMeta } from '@unhead/react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -47,8 +47,11 @@ export default function Dashboard() {
   const actionParam = searchParams.get('action') as SwapType | null;
   const agentParam = searchParams.get('agent');
   const [action, setAction] = useState<SwapType | null>(actionParam);
-
-  useEffect(() => { setAction(actionParam); }, [actionParam]);
+  const [prevActionParam, setPrevActionParam] = useState(actionParam);
+  if (actionParam !== prevActionParam) {
+    setPrevActionParam(actionParam);
+    setAction(actionParam);
+  }
 
   const { hasWallet, balance, balanceLoading, refreshBalance } = useUnifiedWallet();
   const { localSwaps, useMySwaps } = useSwapStateMachine();
@@ -237,7 +240,7 @@ function SwapRow({ swap }: { swap: import('@/hooks/useSwapStateMachine').LocalSw
 
 function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselectedAgent?: string }) {
   const { agents, isLoading, refetch, isFetching } = useAgents();
-  const { hasWallet, makeInvoice, balance } = useUnifiedWallet();
+  const { hasWallet, balance } = useUnifiedWallet();
   const { publishSwapRequest } = useSwapStateMachine();
   const { sendMessage, hasNip44 } = useSwapMessages();
   const { isConnected: isEscrowConnected, connection: escrowConn, createEscrow, getFundingInstructions } = useEscrowConnection();
@@ -356,11 +359,11 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
       </div>
 
       {!hasWallet && isBuy && (
-        <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
-          <Info className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+        <div className="flex items-start gap-3 rounded-lg border border-blue-500/30 bg-blue-500/5 p-4">
+          <Info className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
           <div className="text-sm">
-            <p className="font-medium text-amber-600">Wallet required</p>
-            <p className="text-muted-foreground">Connect a Lightning wallet to receive Bitcoin. <Link to="/wallet" className="font-medium text-foreground underline">Connect now</Link>.</p>
+            <p className="font-medium text-blue-600">Wallet recommended</p>
+            <p className="text-muted-foreground">Link a Lightning wallet via NWC to receive your Bitcoin payout instantly. You can also start the swap now and connect one later. <Link to="/wallet" className="font-medium text-foreground underline">Connect wallet</Link>.</p>
           </div>
         </div>
       )}
@@ -439,7 +442,7 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
         </div>
       )}
 
-      <Button onClick={handleSubmit} disabled={submitting || !selectedAgentPubkey || !amountSats || !isEscrowConnected || (isBuy && !hasWallet)} className="w-full">
+      <Button onClick={handleSubmit} disabled={submitting || !selectedAgentPubkey || !amountSats || !isEscrowConnected} className="w-full">
         {submitting ? (<><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>) : isBuy ? (<><ArrowDownToLine className="h-4 w-4" /> Buy Bitcoin</>) : (<><ArrowUpFromLine className="h-4 w-4" /> Sell Bitcoin</>)}
       </Button>
     </div>
