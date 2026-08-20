@@ -4,14 +4,14 @@ This document describes how PontPay implements the **Pontmore Protocol** —
 a Nostr-native protocol family for agent identity, capability discovery,
 escrow declaration, and swap lifecycle coordination.
 
-**Canonical spec:** https://github.com/mk-Denver/protocol
+**Canonical spec:** https://github.com/pontmore/protocol
 
 ## PIPs Implemented
 
 | PIP | Title | Kind(s) | Status |
 |-----|-------|---------|--------|
 | PIP-00 | Agent Definition | 30360 | Implemented |
-| PIP-01 | Escrow Descriptor | 30361 | Implemented (discovery + HTTP service connection) |
+| PIP-01 | Escrow Descriptor | 30361 | Implemented (discovery + schema-based service connection) |
 | PIP-02 | Swap State Machine | 7300, 7301, 7302, 7303, 7304, 30362 | Implemented |
 | PIP-03 | Dispute Policy | 7303 | Implemented (dispute events) |
 
@@ -45,7 +45,37 @@ Agent and escrow discovery refresh only when the user presses the Refresh button
 ## PIP-01: Escrow Descriptor (kind 30361)
 
 PontPay discovers escrow services published on Nostr and connects to them
-via their HTTP service interface. Escrow is **required** for all swaps.
+by resolving their service schema. Escrow is **required** for all swaps.
+
+### Descriptor Content (PIP-01)
+
+The kind 30361 content field MUST include:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | number | Protocol version (1) |
+| `escrow_type` | string | `custodial_escrow`, `lightning_hold_invoice`, or `cashu_escrow` |
+| `networks` | string[] | Lowercase network identifiers (`bitcoin`, `lightning`, `cashu`) |
+| `funding_rules` | object | `{ funding_threshold: number, participant_count: number }` — m of n funding |
+| `dispute_rules` | object | `{ policy: string }` — e.g. `pip03` |
+| `reference_format` | string | `bolt11`, `bolt11_or_custodial_escrow_reference`, etc. |
+| `updated_at` | number | Unix timestamp |
+
+### Service Block (Optional)
+
+When present, the `service` block is strictly a schema pointer per PIP-01:
+
+```json
+"service": {
+  "schema": {
+    "type": "openapi",
+    "url": "https://escrow.example.com/pontmore-escrow.openapi.json"
+  }
+}
+```
+
+Supported schema types: `openapi`, `asyncapi`. The endpoint, operations, auth,
+and all service behavior are defined by the referenced schema — not by PIP-01.
 
 ### Escrow Discovery
 
@@ -59,12 +89,13 @@ Results refresh only on manual button press.
 
 ### Escrow Connection
 
-When a user connects to a discovered escrow with a `service` block
-(standalone-sufficient), PontPay:
+When a user connects to a discovered escrow with a `service.schema` block:
 
-1. Stores the connection (endpoint, schema_url, auth, operations, funding_model, release_decisions) in localStorage
-2. Authenticates each HTTP request with NIP-98 (kind 27235) signed by the user's Nostr identity
-3. Calls the escrow's HTTP API operations: `create`, `funding_instructions`, `fund_status`, `release`, `refund`, `cancel`
+1. PontPay fetches the referenced OpenAPI/AsyncAPI schema (with safety checks: `https://` only, size limits, timeouts, content-type verification)
+2. Extracts the base endpoint URL from the schema (`servers[0].url`)
+3. Stores the connection (endpoint, schemaType, schemaUrl) in localStorage
+4. Authenticates each HTTP request with NIP-98 (kind 27235) signed by the user's Nostr identity
+5. Calls the escrow's HTTP API operations: `create`, `funding_instructions`, `fund_status`, `release`, `refund`, `cancel`
 
 The `useEscrowConnection` hook provides the API client. NIP-98 auth events
 are signed client-side via the Nostrify signer and never published — only
@@ -200,7 +231,9 @@ PontPay uses Nostr Wallet Connect (NIP-47) via `@getalby/sdk` for:
   Nostr identity. Each agent publishes a companion escrow descriptor (kind 30361)
   and references it via the `a` tag.
 - Escrow connections require NIP-98 auth — the user's Nostr identity signs
-  each HTTP request. Private keys never leave the browser.
+  each HTTP request. Private keys never leave the browser. The escrow service
+  endpoint is resolved from the referenced OpenAPI/AsyncAPI schema at connect
+  time, with fetch safety checks per PIP-01.
 - Swap state machine events (kinds 7300-7304) are **public** and immutable
 - Sensitive payloads are exchanged via **NIP-17 Gift Wrap** (encrypted)
 - Lightning payments settle with instant finality — Nostr is the messaging

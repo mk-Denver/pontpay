@@ -100,32 +100,23 @@ export interface PontmoreEscrow {
   // Content fields
   version: number;
   escrowType: string;
-  fundingRules: Record<string, string>;
-  releaseRules: Record<string, string>;
-  disputeRules: Record<string, string>;
+  fundingRules: { fundingThreshold: number; participantCount: number };
+  disputeRules: { policy: string };
   referenceFormat: string;
   updatedAt: number;
-  // Subtype-specific fields
-  invoiceNetwork?: string;
-  payoutNetwork?: string;
-  custodyAuthority?: string;
-  releaseAuthority?: string;
-  refundAuthority?: string;
   // Service block (standalone-sufficient escrows)
   service?: PontmoreEscrowService;
   implementations?: PontmoreEscrowImplementation[];
 }
 
-/** The service block of a PIP-01 escrow descriptor (standalone-sufficient). */
+/** The service block of a PIP-01 escrow descriptor (standalone-sufficient).
+ *  PIP-01 defines service as only a schema pointer — endpoint and operations
+ *  belong to the referenced schema (OpenAPI/AsyncAPI). */
 export interface PontmoreEscrowService {
-  transport: string[];
-  interface: string;
-  endpoint: string;
-  schema_url: string;
-  auth: string[];
-  operations: string[];
-  funding_model: string;
-  release_decisions: string[];
+  schema: {
+    type: string;
+    url: string;
+  };
 }
 
 /** An implementation entry in a PIP-01 custodial escrow descriptor. */
@@ -372,16 +363,10 @@ export function parsePontmoreEscrow(event: {
   let version = 1;
   let escrowType = '';
   let networks: string[] = [];
-  let fundingRules: Record<string, string> = {};
-  let releaseRules: Record<string, string> = {};
-  let disputeRules: Record<string, string> = {};
+  let fundingRules: { fundingThreshold: number; participantCount: number } = { fundingThreshold: 1, participantCount: 1 };
+  let disputeRules: { policy: string } = { policy: '' };
   let referenceFormat = '';
   let updatedAt = 0;
-  let invoiceNetwork: string | undefined;
-  let payoutNetwork: string | undefined;
-  let custodyAuthority: string | undefined;
-  let releaseAuthority: string | undefined;
-  let refundAuthority: string | undefined;
 
   try {
     const c = JSON.parse(event.content);
@@ -389,36 +374,38 @@ export function parsePontmoreEscrow(event: {
       version = typeof c.version === 'number' ? c.version : 1;
       escrowType = typeof c.escrow_type === 'string' ? c.escrow_type : '';
       networks = Array.isArray(c.networks) ? c.networks : [];
-      fundingRules = c.funding_rules ?? {};
-      releaseRules = c.release_rules ?? {};
-      disputeRules = c.dispute_rules ?? {};
       referenceFormat = typeof c.reference_format === 'string' ? c.reference_format : '';
       updatedAt = typeof c.updated_at === 'number' ? c.updated_at : 0;
-      invoiceNetwork = typeof c.invoice_network === 'string' ? c.invoice_network : undefined;
-      payoutNetwork = typeof c.payout_network === 'string' ? c.payout_network : undefined;
-      custodyAuthority = typeof c.custody_authority === 'string' ? c.custody_authority : undefined;
-      releaseAuthority = typeof c.release_authority === 'string' ? c.release_authority : undefined;
-      refundAuthority = typeof c.refund_authority === 'string' ? c.refund_authority : undefined;
+
+      if (c.funding_rules && typeof c.funding_rules === 'object') {
+        fundingRules = {
+          fundingThreshold: typeof c.funding_rules.funding_threshold === 'number' ? c.funding_rules.funding_threshold : 1,
+          participantCount: typeof c.funding_rules.participant_count === 'number' ? c.funding_rules.participant_count : 1,
+        };
+      }
+
+      if (c.dispute_rules && typeof c.dispute_rules === 'object') {
+        disputeRules = {
+          policy: typeof c.dispute_rules.policy === 'string' ? c.dispute_rules.policy : '',
+        };
+      }
     }
   } catch {
     // content may not be valid JSON
   }
 
-  // Extract service block if present
+  // Extract service block if present (PIP-01: service contains only schema pointer)
   let service: PontmoreEscrowService | undefined;
   let implementations: PontmoreEscrowImplementation[] | undefined;
   try {
     const c = JSON.parse(event.content);
-    if (c.service && typeof c.service === 'object') {
+    if (c.service && typeof c.service === 'object' && c.service.schema) {
+      const s = c.service.schema;
       service = {
-        transport: Array.isArray(c.service.transport) ? c.service.transport : [],
-        interface: typeof c.service.interface === 'string' ? c.service.interface : '',
-        endpoint: typeof c.service.endpoint === 'string' ? c.service.endpoint : '',
-        schema_url: typeof c.service.schema_url === 'string' ? c.service.schema_url : '',
-        auth: Array.isArray(c.service.auth) ? c.service.auth : [],
-        operations: Array.isArray(c.service.operations) ? c.service.operations : [],
-        funding_model: typeof c.service.funding_model === 'string' ? c.service.funding_model : '',
-        release_decisions: Array.isArray(c.service.release_decisions) ? c.service.release_decisions : [],
+        schema: {
+          type: typeof s.type === 'string' ? s.type : '',
+          url: typeof s.url === 'string' ? s.url : '',
+        },
       };
     }
     if (Array.isArray(c.implementations)) {
@@ -451,15 +438,9 @@ export function parsePontmoreEscrow(event: {
     version,
     escrowType,
     fundingRules,
-    releaseRules,
     disputeRules,
     referenceFormat,
     updatedAt,
-    invoiceNetwork,
-    payoutNetwork,
-    custodyAuthority,
-    releaseAuthority,
-    refundAuthority,
     service,
     implementations,
   };

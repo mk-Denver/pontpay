@@ -144,16 +144,12 @@ export function useAgentRegistration() {
         version: 1,
         escrow_type: 'custodial_escrow',
         networks: ['lightning'],
-        funding_rules: { required_confirmation: 'invoice_paid' },
-        release_rules: {
-          release_trigger: 'application_signed_result',
-          refund_trigger: 'timeout_requires_mutual_consent',
+        funding_rules: {
+          funding_threshold: 1,
+          participant_count: 1,
         },
-        dispute_rules: { policy: 'operator_resolved' },
+        dispute_rules: { policy: 'pip03' },
         reference_format: 'bolt11_or_custodial_escrow_reference',
-        custody_authority: 'escrow_operator',
-        release_authority: 'escrow_operator',
-        refund_authority: 'escrow_operator',
         implementations: [{
           network: 'lightning',
           invoice_asset: 'BTC',

@@ -1,5 +1,6 @@
 import { useSeoMeta } from '@unhead/react';
 import { Link } from 'react-router-dom';
+import { useState } from 'react';
 import {
   ShieldCheck,
   Server,
@@ -10,10 +11,14 @@ import {
   Zap,
   ArrowRight,
   RefreshCw,
+  FileJson,
+  Hash,
+  Users,
+  Scale,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -26,12 +31,22 @@ export default function EscrowPage() {
   const { selectedRelays } = useDiscoveryRelays();
 
   const { escrows, isLoading, refetch } = useEscrowDiscovery(selectedRelays);
-  const { connection, isConnected, connect, disconnect } = useEscrowConnection();
+  const { connection, isConnected, isConnecting, connect, disconnect } = useEscrowConnection();
+  const [connectingId, setConnectingId] = useState<string | null>(null);
 
   useSeoMeta({
     title: 'Escrow Discovery — PontPay',
     description: 'Discover escrow services published on Nostr and connect to them.',
   });
+
+  const handleConnect = async (escrow: Parameters<typeof connect>[0]) => {
+    setConnectingId(escrow.event.id);
+    try {
+      await connect(escrow);
+    } finally {
+      setConnectingId(null);
+    }
+  };
 
   if (!user) {
     return (
@@ -67,7 +82,7 @@ export default function EscrowPage() {
             <div>
               <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Escrow Discovery</h1>
               <p className="mt-1 text-muted-foreground">
-                Discover escrow services published on Nostr (PIP-01, kind 30361) and connect to them as an agent.
+                Discover escrow services published on Nostr (PIP-01, kind 30361) and connect to them.
               </p>
             </div>
           </div>
@@ -83,10 +98,7 @@ export default function EscrowPage() {
                 <p className="text-sm text-muted-foreground font-mono text-xs">{connection.endpoint}</p>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   <Badge variant="secondary" className="text-xs">{connection.escrowType}</Badge>
-                  <Badge variant="outline" className="text-xs">{connection.fundingModel}</Badge>
-                  {connection.releaseDecisions.map((rd) => (
-                    <Badge key={rd} variant="outline" className="text-xs">{rd}</Badge>
-                  ))}
+                  <Badge variant="outline" className="text-xs">{connection.schemaType} schema</Badge>
                 </div>
               </div>
               <Button variant="outline" size="sm" onClick={disconnect}>Disconnect</Button>
@@ -101,7 +113,7 @@ export default function EscrowPage() {
                   <p className="font-medium text-blue-600">No escrow connected</p>
                   <p className="mt-1 text-muted-foreground">
                     Browse the escrow directory below and click <strong>Connect</strong> on a
-                    service that has an HTTP endpoint. Once connected, your swap requests will
+                    service that advertises a schema URL. Once connected, your swap requests will
                     use that escrow for custody and settlement.
                   </p>
                 </div>
@@ -145,8 +157,9 @@ export default function EscrowPage() {
         ) : (
           <div className="space-y-3">
             {escrows.map((escrow) => {
-              const hasService = !!escrow.service?.endpoint;
+              const hasService = !!escrow.service?.schema?.url;
               const isActive = connection?.pubkey === escrow.event.pubkey && connection?.d === escrow.d;
+              const isConnectingThis = connectingId === escrow.event.id;
               return (
                 <Card key={escrow.event.id} className={isActive ? 'ring-2 ring-green-500/30' : ''}>
                   <CardContent className="py-4">
@@ -154,7 +167,7 @@ export default function EscrowPage() {
                       <div className="min-w-0 flex-1 space-y-2">
                         <div className="flex items-center gap-2">
                           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-                          <p className="font-medium text-sm">{escrow.escrowType || 'Unknown escrow type'}</p>
+                          <p className="font-medium text-sm capitalize">{escrow.escrowType?.replace(/_/g, ' ') || 'Unknown escrow type'}</p>
                           {hasService ? (
                             <Badge className="bg-green-500/10 text-green-600 border-green-500/20 text-xs">
                               <Globe className="mr-1 h-3 w-3" /> Standalone
@@ -166,26 +179,43 @@ export default function EscrowPage() {
 
                         <p className="text-xs text-muted-foreground font-mono">{escrow.event.pubkey.slice(0, 20)}…</p>
 
-                        {hasService && escrow.service && (
-                          <>
-                            <div className="flex flex-wrap gap-1.5">
-                              <Badge variant="outline" className="text-xs">{escrow.service.funding_model}</Badge>
-                              {escrow.service.auth.map((a) => (
-                                <Badge key={a} variant="outline" className="text-xs">{a}</Badge>
-                              ))}
-                              {escrow.service.operations.map((op) => (
-                                <Badge key={op} variant="secondary" className="text-xs">{op}</Badge>
-                              ))}
-                            </div>
-                            <p className="text-xs text-muted-foreground font-mono truncate">{escrow.service.endpoint}</p>
-                          </>
-                        )}
+                        {/* PIP-01: funding rules (m of n) */}
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Users className="h-3.5 w-3.5" />
+                          <span>Funding: <strong className="text-foreground">{escrow.fundingRules.fundingThreshold} of {escrow.fundingRules.participantCount}</strong></span>
+                        </div>
 
+                        {/* PIP-01: dispute rules + reference format */}
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          {escrow.disputeRules.policy && (
+                            <span className="flex items-center gap-1">
+                              <Scale className="h-3.5 w-3.5" />
+                              <Badge variant="outline" className="text-xs font-mono">{escrow.disputeRules.policy}</Badge>
+                            </span>
+                          )}
+                          {escrow.referenceFormat && (
+                            <span className="flex items-center gap-1">
+                              <Hash className="h-3.5 w-3.5" />
+                              <Badge variant="outline" className="text-xs font-mono">{escrow.referenceFormat}</Badge>
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Networks */}
                         <div className="flex flex-wrap gap-1.5">
                           {escrow.networks.map((n) => (
                             <Badge key={n} variant="outline" className="text-xs capitalize">{n}</Badge>
                           ))}
                         </div>
+
+                        {/* Service schema info */}
+                        {hasService && escrow.service?.schema && (
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <FileJson className="h-3.5 w-3.5" />
+                            <Badge variant="outline" className="text-xs">{escrow.service.schema.type}</Badge>
+                            <span className="font-mono truncate">{escrow.service.schema.url}</span>
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex flex-col gap-2 shrink-0">
@@ -195,12 +225,16 @@ export default function EscrowPage() {
                               <CheckCircle2 className="mr-1 h-3 w-3" /> Connected
                             </Badge>
                           ) : (
-                            <Button size="sm" onClick={() => connect(escrow)}>
-                              <Zap className="h-4 w-4" /> Connect
+                            <Button size="sm" onClick={() => handleConnect(escrow)} disabled={isConnecting || isConnectingThis}>
+                              {isConnectingThis ? (
+                                <><Loader2 className="h-4 w-4 animate-spin" /> Connecting…</>
+                              ) : (
+                                <><Zap className="h-4 w-4" /> Connect</>
+                              )}
                             </Button>
                           )
                         ) : (
-                          <Badge variant="secondary" className="text-xs">No endpoint</Badge>
+                          <Badge variant="secondary" className="text-xs">No schema</Badge>
                         )}
                       </div>
                     </div>

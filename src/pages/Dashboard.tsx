@@ -320,7 +320,7 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
           <Shield className="h-4 w-4 text-blue-600" />
           <div className="flex-1 text-sm">
             <p className="font-medium text-blue-600">Escrow active</p>
-            <p className="text-xs text-muted-foreground">{escrowConn.endpoint} · {escrowConn.fundingModel}</p>
+            <p className="text-xs text-muted-foreground">{escrowConn.endpoint} · {escrowConn.escrowType?.replace(/_/g, ' ')}</p>
           </div>
           <Link to="/escrows"><Button variant="outline" size="sm">Change</Button></Link>
         </div>

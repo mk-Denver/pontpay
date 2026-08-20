@@ -3,13 +3,14 @@
  * call its HTTP API operations (create, funding_instructions, fund_status,
  * release, refund, cancel) authenticated with NIP-98 (kind 27235).
  *
- * The escrow endpoint and metadata come from the kind 30361 descriptor's
- * `service` block. NIP-98 auth events are signed by the user's Nostr
+ * PIP-01 defines the service block as only a schema pointer ({ type, url }).
+ * The endpoint and operations are resolved from the referenced OpenAPI/AsyncAPI
+ * schema at connect time. NIP-98 auth events are signed by the user's Nostr
  * identity (via the Nostrify signer) — never published, only sent as the
  * Authorization header.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useToast } from '@/hooks/useToast';
@@ -18,28 +19,20 @@ import type { PontmoreEscrow } from '@/lib/pontmore';
 
 const NIP98_KIND = 27235;
 
-/** Persisted escrow connection — the escrow descriptor the user chose. */
+/** Persisted escrow connection — resolved from a PIP-01 descriptor. */
 export interface EscrowConnection {
   /** Operator's Nostr pubkey (from the kind 30361 event). */
   pubkey: string;
   /** d-tag identifier from the descriptor event. */
   d: string;
-  /** Escrow type (e.g. "custodial_escrow"). */
+  /** Escrow type (e.g. "custodial_escrow", "lightning_hold_invoice"). */
   escrowType: string;
-  /** HTTP endpoint base URL (from the service block). */
+  /** HTTP endpoint base URL — resolved from the OpenAPI/AsyncAPI schema. */
   endpoint: string;
-  /** Schema URL for the OpenAPI contract. */
+  /** Schema type (e.g. "openapi", "asyncapi") from service.schema.type. */
+  schemaType: string;
+  /** Schema URL from service.schema.url. */
   schemaUrl: string;
-  /** Interface identifier (e.g. "pontmore_escrow_http_v1"). */
-  interface: string;
-  /** Accepted auth methods. */
-  auth: string[];
-  /** Supported operations. */
-  operations: string[];
-  /** Funding model. */
-  fundingModel: string;
-  /** Accepted release decisions. */
-  releaseDecisions: string[];
   /** When the connection was established. */
   connectedAt: number;
 }
@@ -92,6 +85,77 @@ export interface CancelResponse {
   state: string;
 }
 
+// ─── Schema fetch helpers ──────────────────────────────────────────
+
+const MAX_SCHEMA_SIZE = 512 * 1024; // 512 KB
+const SCHEMA_FETCH_TIMEOUT = 10_000; // 10 seconds
+
+/** Resolve the base endpoint URL from an OpenAPI JSON schema. */
+function resolveOpenApiEndpoint(schema: Record<string, unknown>): string {
+  if (Array.isArray(schema.servers) && schema.servers.length > 0) {
+    const first = schema.servers[0] as Record<string, unknown>;
+    if (typeof first.url === 'string') return first.url;
+  }
+  throw new Error('OpenAPI schema has no servers[0].url');
+}
+
+/** Resolve the base endpoint from an AsyncAPI schema. */
+function resolveAsyncApiEndpoint(schema: Record<string, unknown>): string {
+  if (Array.isArray(schema.servers)) {
+    const first = schema.servers[0] as Record<string, unknown>;
+    if (first) {
+      if (typeof first.url === 'string') return first.url;
+      if (typeof first.host === 'string') {
+        const protocol = typeof first.protocol === 'string' ? first.protocol : 'https';
+        return `${protocol}://${first.host}`;
+      }
+    }
+  }
+  throw new Error('AsyncAPI schema has no resolvable server URL');
+}
+
+/**
+ * Fetch and parse a service schema, returning the resolved endpoint URL.
+ * Applies size limits, timeouts, and content-type checks per PIP-01 schema fetch safety.
+ */
+async function fetchSchemaEndpoint(schemaType: string, schemaUrl: string): Promise<string> {
+  const url = new URL(schemaUrl);
+  if (url.protocol !== 'https:') {
+    throw new Error('Schema URL must use https://');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SCHEMA_FETCH_TIMEOUT);
+
+  try {
+    const res = await fetch(schemaUrl, { signal: controller.signal });
+    if (!res.ok) throw new Error(`Schema fetch failed: HTTP ${res.status}`);
+
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!contentType.includes('json')) {
+      throw new Error(`Schema must be JSON, got ${contentType}`);
+    }
+
+    const text = await res.text();
+    if (text.length > MAX_SCHEMA_SIZE) {
+      throw new Error(`Schema exceeds ${MAX_SCHEMA_SIZE} byte limit`);
+    }
+
+    const schema = JSON.parse(text);
+    if (!schema || typeof schema !== 'object') {
+      throw new Error('Invalid schema JSON');
+    }
+
+    switch (schemaType) {
+      case 'openapi': return resolveOpenApiEndpoint(schema);
+      case 'asyncapi': return resolveAsyncApiEndpoint(schema);
+      default: throw new Error(`Unsupported schema type: ${schemaType}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Hook ──────────────────────────────────────────────────────────
 
 export function useEscrowConnection() {
@@ -101,31 +165,41 @@ export function useEscrowConnection() {
     'pontpay-escrow-connection',
     null,
   );
+  const [isConnecting, setIsConnecting] = useState(false);
 
   const isConnected = !!connection && !!user;
 
-  /** Connect to an escrow descriptor discovered on Nostr. */
+  /** Connect to an escrow descriptor discovered on Nostr.
+   *  Resolves the service endpoint from the referenced schema per PIP-01. */
   const connect = useCallback(
-    (escrow: PontmoreEscrow) => {
-      if (!escrow.service?.endpoint) {
-        toast({ title: 'Cannot connect', description: 'This escrow has no service endpoint.', variant: 'destructive' });
+    async (escrow: PontmoreEscrow) => {
+      const schema = escrow.service?.schema;
+      if (!schema?.url) {
+        toast({ title: 'Cannot connect', description: 'This escrow has no service schema.', variant: 'destructive' });
         return;
       }
-      const conn: EscrowConnection = {
-        pubkey: escrow.event.pubkey,
-        d: escrow.d,
-        escrowType: escrow.escrowType,
-        endpoint: escrow.service.endpoint,
-        schemaUrl: escrow.service.schema_url,
-        interface: escrow.service.interface,
-        auth: escrow.service.auth,
-        operations: escrow.service.operations,
-        fundingModel: escrow.service.funding_model,
-        releaseDecisions: escrow.service.release_decisions,
-        connectedAt: Date.now(),
-      };
-      setConnection(conn);
-      toast({ title: 'Connected to escrow', description: `${conn.endpoint}` });
+
+      setIsConnecting(true);
+      try {
+        const endpoint = await fetchSchemaEndpoint(schema.type, schema.url);
+
+        const conn: EscrowConnection = {
+          pubkey: escrow.event.pubkey,
+          d: escrow.d,
+          escrowType: escrow.escrowType,
+          endpoint,
+          schemaType: schema.type,
+          schemaUrl: schema.url,
+          connectedAt: Date.now(),
+        };
+        setConnection(conn);
+        toast({ title: 'Connected to escrow', description: endpoint });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Schema fetch failed';
+        toast({ title: 'Connection failed', description: msg, variant: 'destructive' });
+      } finally {
+        setIsConnecting(false);
+      }
     },
     [setConnection, toast],
   );
@@ -255,6 +329,7 @@ export function useEscrowConnection() {
     // State
     connection,
     isConnected,
+    isConnecting,
     endpoint: connection?.endpoint ?? null,
     // Connection
     connect,

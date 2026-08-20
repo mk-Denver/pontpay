@@ -17,55 +17,43 @@ import {
 export interface EscrowDescriptorInput {
   /** Stable identifier (d-tag), usually "default". */
   identifier: string;
-  /** Escrow subtype: "lightning_hold_invoice" or "custodial_escrow". */
+  /** Escrow subtype: "lightning_hold_invoice", "custodial_escrow", or "cashu_escrow". */
   escrowType: string;
-  /** Settlement networks: ["bitcoin", "lightning"]. */
+  /** Settlement networks: ["bitcoin", "lightning", "cashu"]. */
   networks: string[];
-  /** Funding rules (e.g. { required_confirmation: "invoice_held" }). */
-  fundingRules: Record<string, string>;
-  /** Release rules (e.g. { release_trigger: "counterparty_fiat_payment_confirmed" }). */
-  releaseRules: Record<string, string>;
-  /** Dispute rules (e.g. { policy: "operator_resolved" }). */
-  disputeRules: Record<string, string>;
+  /** Funding rules: m of n threshold (e.g. 1 of 1 for single-funder). */
+  fundingRules: { fundingThreshold: number; participantCount: number };
+  /** Dispute policy identifier (e.g. "pip03"). */
+  disputeRules: { policy: string };
   /** Reference format: "bolt11", "bolt11_or_custodial_escrow_reference", etc. */
   referenceFormat: string;
-  /** Invoice network (for lightning_hold_invoice subtype). */
-  invoiceNetwork?: string;
-  /** Payout network. */
-  payoutNetwork?: string;
 }
 
-/** Build the JSON content for a kind 30361 event. */
+/** Build the JSON content for a kind 30361 event per PIP-01. */
 function buildEscrowContent(input: EscrowDescriptorInput): string {
   const content: Record<string, unknown> = {
     version: 1,
     escrow_type: input.escrowType,
     networks: input.networks,
-    funding_rules: input.fundingRules,
-    release_rules: input.releaseRules,
-    dispute_rules: input.disputeRules,
+    funding_rules: {
+      funding_threshold: input.fundingRules.fundingThreshold,
+      participant_count: input.fundingRules.participantCount,
+    },
+    dispute_rules: {
+      policy: input.disputeRules.policy,
+    },
     reference_format: input.referenceFormat,
     updated_at: Math.floor(Date.now() / 1000),
   };
 
-  if (input.invoiceNetwork) content.invoice_network = input.invoiceNetwork;
-  if (input.payoutNetwork) content.payout_network = input.payoutNetwork;
-
-  // Add custodial fields if applicable
+  // Add implementations array for custodial subtype (PIP-01)
   if (input.escrowType === 'custodial_escrow') {
-    const authority = 'escrow_operator';
-    content.custody_authority = authority;
-    content.release_authority = authority;
-    content.refund_authority = authority;
-
-    // Add implementations array (PIP-01 custodial subtype)
     content.implementations = [
       {
         network: 'lightning',
         invoice_asset: 'BTC',
         invoice_currency: 'sats',
-        invoice_amount_rule: 'derived_from_swap_request',
-        invoice_expiry_rule: 'expires_if_unpaid_before_funding_timeout',
+        invoice_amount_rule: 'exact',
         payout_network: 'lightning',
       },
     ];

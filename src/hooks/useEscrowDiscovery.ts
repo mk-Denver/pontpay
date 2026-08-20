@@ -42,9 +42,9 @@ export function useEscrowDiscovery(relays?: string[]) {
     refetchOnMount: false,
   });
 
-  /** Escrows that have a service block (standalone-sufficient — usable by autonomous apps). */
+  /** Escrows that have a service schema block (standalone-sufficient — usable by autonomous apps). */
   const standaloneEscrows = useMemo(
-    () => (escrows ?? []).filter((e) => !!e.service?.endpoint),
+    () => (escrows ?? []).filter((e) => !!e.service?.schema?.url),
     [escrows],
   );
 
