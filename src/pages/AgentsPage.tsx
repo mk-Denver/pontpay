@@ -4,21 +4,18 @@ import { useState, useMemo } from 'react';
 import {
   Store,
   Search,
-  BadgeCheck,
-  Zap,
   ArrowRight,
   ShieldCheck,
   Plus,
   Users,
   Globe,
-  TrendingUp,
+  Loader2,
+  RefreshCw,
   Pencil,
   Store as StoreIcon,
   X,
-  MapPin,
   Coins,
-  Loader2,
-  RefreshCw,
+  TrendingUp,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Input } from '@/components/ui/input';
@@ -35,11 +32,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { useAgents } from '@/hooks/useAgents';
+import { useAgents, type AgentWithOffers } from '@/hooks/useAgents';
 import { useAgentRegistration } from '@/hooks/useAgentRegistration';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { useAuthor } from '@/hooks/useAuthor';
 import { RelaySelector, useDiscoveryRelays } from '@/components/RelaySelector';
-import { formatSats } from '@/lib/pontmore';
+import { formatSats, deriveBitcoinAmount, type SwapOffer } from '@/lib/pontmore';
 
 const CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
 
@@ -64,20 +62,16 @@ export default function AgentsPage() {
   // Directory stats
   const stats = useMemo(() => {
     const allCurrencies = new Set<string>();
-    const allRegions = new Set<string>();
-    let totalLiquidity = 0;
+    let totalAgents = 0;
 
     for (const agent of allAgents) {
-      for (const c of agent.fiatCurrencies) allCurrencies.add(c);
-      for (const r of agent.capabilities.regions) allRegions.add(r);
-      totalLiquidity += agent.capabilities.maxAmount;
+      totalAgents++;
+      for (const o of agent.offers) allCurrencies.add(o.f);
     }
 
     return {
-      totalAgents: allAgents.length,
+      totalAgents,
       totalCurrencies: allCurrencies.size,
-      totalRegions: allRegions.size,
-      totalLiquidity,
     };
   }, [allAgents]);
 
@@ -97,8 +91,8 @@ export default function AgentsPage() {
                 Agent Discovery
               </h1>
               <p className="mt-2 text-muted-foreground">
-                Pontmore agents (PIP-00) that publish capabilities and conduct
-                swaps. Discoverable on Nostr, available worldwide.
+                Pontmore agents (PIP-00) with NIP-69 swap offers. Discoverable on
+                Nostr, available worldwide.
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -131,8 +125,7 @@ export default function AgentsPage() {
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium text-green-600">Your agent definition is live</p>
                 <p className="truncate text-sm text-muted-foreground">
-                  <strong>{myAgent.name}</strong>
-                  {myAgent.fiatCurrencies.length > 0 ? ` · ${myAgent.fiatCurrencies.join(', ')}` : ''}
+                  Capabilities: {myAgent.capabilities.join(', ')}
                 </p>
               </div>
               <Button asChild size="sm" variant="outline">
@@ -147,9 +140,9 @@ export default function AgentsPage() {
         {/* Stats */}
         <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard icon={Users} label="Registered agents" value={isLoading ? '…' : stats.totalAgents.toString()} color="orange" />
-          <StatCard icon={Coins} label="Currencies" value={isLoading ? '…' : stats.totalCurrencies.toString()} color="blue" />
-          <StatCard icon={Globe} label="Regions served" value={isLoading ? '…' : stats.totalRegions.toString()} color="green" />
-          <StatCard icon={TrendingUp} label="Max capacity" value={isLoading ? '…' : formatSats(stats.totalLiquidity)} color="amber" />
+          <StatCard icon={Coins} label="Currencies offered" value={isLoading ? '…' : stats.totalCurrencies.toString()} color="blue" />
+          <StatCard icon={Globe} label="Network" value="Nostr" color="green" />
+          <StatCard icon={TrendingUp} label="Protocol" value="swap@1" color="amber" />
         </div>
 
         {/* Filters */}
@@ -160,7 +153,7 @@ export default function AgentsPage() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id="search"
-                placeholder="Search by name or region..."
+                placeholder="Search by currency or payment channel..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-10"
@@ -220,7 +213,7 @@ export default function AgentsPage() {
               </p>
               <p className="mt-2 max-w-sm mx-auto text-sm text-muted-foreground">
                 {allAgents.length === 0
-                  ? 'Be the first agent on the Pontmore network. Register your agent definition (PIP-00) and start earning commission.'
+                  ? 'Be the first agent on the Pontmore network. Register your agent definition (PIP-00) and publish a swap offer (NIP-69).'
                   : 'No agents match your filters. Try a different search or currency.'}
               </p>
               {user && allAgents.length === 0 && (
@@ -237,79 +230,7 @@ export default function AgentsPage() {
             </p>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {agents.map((agent) => (
-                <Card key={agent.event.id} className="flex flex-col transition-all hover:shadow-md hover:-translate-y-0.5">
-                  <CardHeader className="pb-3">
-                    <div className="flex items-start gap-3">
-                      <Avatar className="h-12 w-12 border">
-                        <AvatarFallback className="bg-orange-500/10 text-orange-600 font-semibold">
-                          {agent.name.slice(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <h3 className="truncate font-semibold">{agent.name}</h3>
-                          {myAgent?.event.pubkey === agent.event.pubkey && (
-                            <Badge className="shrink-0 bg-green-500/10 text-green-600 border-green-500/20 text-xs">You</Badge>
-                          )}
-                        </div>
-                        {agent.about && (
-                          <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{agent.about}</p>
-                        )}
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="flex flex-1 flex-col">
-                    {/* Swap types */}
-                    {agent.capabilities.swapTypes.length > 0 && (
-                      <div className="mb-2 flex flex-wrap gap-1">
-                        {agent.capabilities.swapTypes.map((t) => (
-                          <Badge key={t} variant="secondary" className="text-xs capitalize">{t}</Badge>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Regions */}
-                    {agent.capabilities.regions.length > 0 && (
-                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <MapPin className="h-3 w-3" />
-                        <span>{agent.capabilities.regions.join(', ')}</span>
-                      </div>
-                    )}
-
-                    {/* Currencies */}
-                    {agent.fiatCurrencies.length > 0 && (
-                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Coins className="h-3 w-3" />
-                        <span>{agent.fiatCurrencies.join(', ')}</span>
-                      </div>
-                    )}
-
-                    {/* Limits */}
-                    {agent.capabilities.minAmount > 0 && agent.capabilities.maxAmount > 0 && (
-                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Zap className="h-3 w-3" />
-                        <span>{formatSats(agent.capabilities.minAmount)} – {formatSats(agent.capabilities.maxAmount)}</span>
-                      </div>
-                    )}
-
-                    {/* Escrow */}
-                    {agent.escrowSummary && (
-                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <ShieldCheck className="h-3 w-3 text-green-500" />
-                        <span className="capitalize">{agent.escrowSummary.replace(/_/g, ' ')}</span>
-                      </div>
-                    )}
-
-                    <div className="mt-auto pt-3 border-t">
-                      <Button asChild size="sm" className="w-full">
-                        <Link to={`/dashboard?agent=${agent.event.pubkey}`}>
-                          Transact with agent
-                          <ArrowRight className="ml-1 h-3.5 w-3.5" />
-                        </Link>
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
+                <AgentCard key={agent.event.id} agent={agent} isOwn={myAgent?.event.pubkey === agent.event.pubkey} />
               ))}
             </div>
           </>
@@ -325,8 +246,8 @@ export default function AgentsPage() {
               <div className="flex-1">
                 <p className="font-semibold">Want to earn commission?</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Register as a Pontmore agent (PIP-00). Publish capabilities and
-                  conduct swaps for users in your region.
+                  Register as a Pontmore agent (PIP-00). Publish a swap offer
+                  (NIP-69) and conduct swaps for users in your region.
                 </p>
               </div>
               <Button asChild className="shrink-0">
@@ -337,6 +258,104 @@ export default function AgentsPage() {
         )}
       </div>
     </AppLayout>
+  );
+}
+
+/** Agent card with profile name (from kind 0) and offers (from NIP-69). */
+function AgentCard({ agent, isOwn }: { agent: AgentWithOffers; isOwn: boolean }) {
+  const { data: authorData } = useAuthor(agent.event.pubkey);
+  const name = authorData?.metadata?.name ?? `${agent.event.pubkey.slice(0, 8)}…`;
+  const about = authorData?.metadata?.about ?? '';
+  const picture = authorData?.metadata?.picture;
+
+  return (
+    <Card className="flex flex-col transition-all hover:shadow-md hover:-translate-y-0.5">
+      <CardHeader className="pb-3">
+        <div className="flex items-start gap-3">
+          <Avatar className="h-12 w-12 border">
+            {picture ? (
+              <img src={picture} alt={name} className="h-full w-full rounded-full object-cover" />
+            ) : (
+              <AvatarFallback className="bg-orange-500/10 text-orange-600 font-semibold">
+                {name.slice(0, 2).toUpperCase()}
+              </AvatarFallback>
+            )}
+          </Avatar>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <h3 className="truncate font-semibold">{name}</h3>
+              {isOwn && (
+                <Badge className="shrink-0 bg-green-500/10 text-green-600 border-green-500/20 text-xs">You</Badge>
+              )}
+            </div>
+            {about && (
+              <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{about}</p>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col">
+        {/* Offers */}
+        {agent.offers.length > 0 ? (
+          <div className="space-y-2">
+            {agent.offers.slice(0, 3).map((offer) => (
+              <OfferRow key={offer.event.id} offer={offer} />
+            ))}
+            {agent.offers.length > 3 && (
+              <p className="text-xs text-muted-foreground">+ {agent.offers.length - 3} more offers</p>
+            )}
+          </div>
+        ) : (
+          <p className="mb-2 text-xs text-muted-foreground">No active offers</p>
+        )}
+
+        {/* Escrow */}
+        {agent.escrowRef && (
+          <div className="mb-2 mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <ShieldCheck className="h-3 w-3 text-green-500" />
+            <span>Escrow configured</span>
+          </div>
+        )}
+
+        <div className="mt-auto pt-3 border-t">
+          <Button asChild size="sm" className="w-full">
+            <Link to={`/dashboard?agent=${agent.event.pubkey}`}>
+              Transact with agent
+              <ArrowRight className="ml-1 h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function OfferRow({ offer }: { offer: SwapOffer }) {
+  const directionLabel = offer.k === 'sell' ? 'Selling BTC' : 'Buying BTC';
+  const btcAmount = deriveBitcoinAmount(offer.faMax, offer.price);
+
+  return (
+    <div className="rounded-lg bg-muted/40 p-2.5">
+      <div className="flex items-center justify-between">
+        <Badge variant="secondary" className="text-xs">{directionLabel}</Badge>
+        <span className="text-xs font-medium">{offer.f}</span>
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-xs text-muted-foreground">
+        <span>{offer.faMin} – {offer.faMax} {offer.f}</span>
+        <span>{btcAmount !== '0' ? formatSats(btcAmount) : '—'}</span>
+      </div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        <span className="font-mono">{Number(offer.price).toLocaleString(undefined, { maximumFractionDigits: 8 })} {offer.f}/BTC</span>
+        {offer.layer && <span> · {offer.layer}</span>}
+      </div>
+      {offer.pm.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {offer.pm.map((p) => (
+            <Badge key={p} variant="outline" className="text-[10px] font-mono">{p}</Badge>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

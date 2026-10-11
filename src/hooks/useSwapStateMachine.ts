@@ -1,16 +1,16 @@
 /**
- * useSwapStateMachine — implements the PIP-02 swap lifecycle.
+ * useSwapStateMachine — implements the PIP-02 v2 coordination lifecycle.
  *
- * Swaps are modeled as Nostr-native state machines with:
- * - kind 7300: immutable swap request (the root event)
- * - kind 7301: immutable transition events (append-only state log)
- * - kind 7302: immutable evidence events (payment proof, payout proof, etc.)
- * - kind 7303: immutable dispute events
- * - kind 7304: immutable note events
- * - kind 30362: replaceable snapshot (materialized view for fast lookup)
+ * A coordination is represented by:
+ *   kind 7300: immutable coordination root (proposes the swap terms)
+ *   kind 7301: immutable coordination actions (append-only, linked by `prev`)
+ *
+ * The root event ID is the coordination_id. Actions form a linear chain where
+ * each action references the root via ["e", rootId, relay, "root"] and the
+ * immediately preceding event via ["e", prevId, relay, "prev"].
  *
  * Sensitive payloads (invoices, bank details) are sent via the companion
- * private message lane (NIP-17 Gift Wrap), NOT in the public swap events.
+ * private message lane (NIP-17 Gift Wrap), NOT in the public coordination events.
  */
 
 import { useNostr } from '@nostrify/react';
@@ -21,41 +21,91 @@ import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useToast } from '@/hooks/useToast';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import {
-  PONTMORE_SWAP_REQUEST_KIND,
-  PONTMORE_SWAP_TRANSITION_KIND,
-  PONTMORE_SWAP_EVIDENCE_KIND,
-  PONTMORE_SWAP_NOTE_KIND,
-  PONTMORE_SWAP_SNAPSHOT_KIND,
-  generateSwapId,
-  buildSwapFromEvents,
-  parseSwapSnapshot,
-  parseSwapRequest,
-  parseSwapTransition,
+  PONTMORE_COORDINATION_ROOT_KIND,
+  PONTMORE_COORDINATION_ACTION_KIND,
+  PONTMORE_SWAP_PROFILE,
+  PONTMORE_PIP02_VERSION,
+  buildCoordinationFromEvents,
+  swapTypeToDirection,
   type SwapType,
-  type SwapState,
-  type SwapRequestContent,
-  type SwapTransitionContent,
-  type SwapEvidenceContent,
-  type SwapSnapshotContent,
-  type PontmoreSwap,
+  type PontmoreCoordination,
+  type LocalCoordinationRecord,
+  type CoordinationRootContent,
+  type CoordinationActionContent,
+  type CoordinationActionId,
+  type CoordinationState,
 } from '@/lib/pontmore';
-import type { NostrEvent } from '@nostrify/nostrify';
 
-/** A local swap record for quick lookup (supplements the snapshot). */
-export interface LocalSwapRecord {
-  swapId: string;
+const HOUR = 3600;
+
+/**
+ * Map a kernel/profile action to the resulting coordination state.
+ * For disputes, core/open_dispute does NOT change the state (it overlays a
+ * disputed flag), and core/resolve_dispute depends on action.data.effect.
+ * This is a simplified mapping for the local ledger — canonical state is
+ * always derived from the full action chain via deriveCoordinationState.
+ */
+function deriveStateFromAction(action: CoordinationActionId, prevState: CoordinationState, data?: CoordinationActionContent['data']): CoordinationState {
+  switch (action) {
+    case 'core/accept': return 'accepted';
+    case 'core/decline': return 'declined';
+    case 'core/secure': return 'secured';
+    case 'swap/fiat_sent': return 'fiat_sent';
+    case 'swap/fiat_confirmed': return 'fiat_confirmed';
+    case 'core/authorize_settlement': return 'settlement_authorized';
+    case 'core/settle': return 'settled';
+    case 'core/authorize_refund': return 'refund_authorized';
+    case 'core/refund': return 'refunded';
+    case 'core/cancel': return 'cancelled';
+    case 'core/expire': return 'expired';
+    case 'core/open_dispute': return prevState; // disputed overlay, state unchanged
+    case 'core/resolve_dispute':
+      if (data?.effect === 'authorize_settlement') return 'settlement_authorized';
+      if (data?.effect === 'authorize_refund') return 'refund_authorized';
+      if (data?.effect === 'cancel') return 'cancelled';
+      return prevState; // resume
+    default: return prevState;
+  }
+}
+
+/** Input for publishing a coordination root (kind 7300). */
+export interface PublishRootParams {
   swapType: SwapType;
   agentPubkey: string;
   customerPubkey: string;
-  amountSats: number;
-  fiatAmount: number;
+  /** Escrow authority pubkey (the descriptor publisher). */
+  escrowPubkey: string;
+  /** Escrow descriptor event ID (exact revision). */
+  escrowDescriptorId: string;
+  /** Escrow descriptor coordinate (e.g. "30361:pubkey:dtag"). */
+  escrowDescriptorCoordinate: string;
+  /** Optional resolver pubkey. */
+  resolverPubkey?: string;
+  /** Fiat currency (ISO 4217). */
   fiatCurrency: string;
-  escrowReference: string;
-  state: SwapState;
-  createdAt: number;
-  updatedAt: number;
-  direction: 'outgoing' | 'incoming';
-  requestId?: string;
+  /** Fiat amount (decimal string). */
+  fiatAmount: string;
+  /** Bitcoin amount in sats (integer string). */
+  bitcoinAmount: string;
+  /** Bitcoin network (e.g. "lightning"). */
+  bitcoinNetwork: string;
+  /** Payment channel identifier (e.g. "mpesa-ke-kes@1"). */
+  paymentChannel: string;
+  /** Acceptance deadline (Unix timestamp). Defaults to now + 1h. */
+  expiresAt?: number;
+  /** Fiat payment deadline (Unix timestamp). Defaults to now + 24h. */
+  fiatPayBy?: number;
+  /** Fiat confirmation deadline (Unix timestamp). Defaults to now + 48h. */
+  fiatConfirmBy?: number;
+}
+
+/** Input for publishing a coordination action (kind 7301). */
+export interface PublishActionParams {
+  coordinationId: string;
+  action: CoordinationActionId;
+  /** The predecessor event ID (root for the first action, otherwise the chain tip). */
+  prevEventId: string;
+  data?: CoordinationActionContent['data'];
 }
 
 export function useSwapStateMachine() {
@@ -67,16 +117,16 @@ export function useSwapStateMachine() {
 
   const myPubkey = user?.pubkey;
 
-  // Local ledger of swap IDs we've initiated or seen
-  const [localSwaps, setLocalSwaps] = useLocalStorage<LocalSwapRecord[]>(
-    'pontmore-swaps',
+  // Local ledger of coordinations we've initiated or seen
+  const [localCoord, setLocalCoord] = useLocalStorage<LocalCoordinationRecord[]>(
+    'pontmore-coordinations',
     [],
   );
 
-  /** Upsert a local swap record. */
-  const upsertLocalSwap = useCallback((record: LocalSwapRecord) => {
-    setLocalSwaps((prev) => {
-      const idx = prev.findIndex((s) => s.swapId === record.swapId);
+  /** Upsert a local coordination record. */
+  const upsertLocalCoord = useCallback((record: LocalCoordinationRecord) => {
+    setLocalCoord((prev) => {
+      const idx = prev.findIndex((s) => s.coordinationId === record.coordinationId);
       if (idx >= 0) {
         const updated = [...prev];
         updated[idx] = { ...updated[idx], ...record, updatedAt: record.updatedAt };
@@ -84,177 +134,139 @@ export function useSwapStateMachine() {
       }
       return [record, ...prev];
     });
-  }, [setLocalSwaps]);
+  }, [setLocalCoord]);
 
   /**
-   * Publish a swap request (kind 7300) — the immutable root event.
-   * This initiates a buy or sell swap.
+   * Publish a coordination root (kind 7300) — the immutable root event.
+   * The root signer is the proposing participant.
    */
-  const publishSwapRequest = useMutation({
-    mutationFn: async (params: {
-      swapType: SwapType;
-      agentPubkey: string;
-      amountSats: number;
-      fiatAmount: number;
-      fiatCurrency: string;
-      escrowReference: string;
-      expirySeconds?: number;
-    }): Promise<string> => {
+  const publishCoordinationRoot = useMutation({
+    mutationFn: async (params: PublishRootParams): Promise<string> => {
       if (!myPubkey) throw new Error('Not logged in');
 
-      const swapId = generateSwapId();
-      const expiry = Math.floor(Date.now() / 1000) + (params.expirySeconds ?? 3600);
+      const now = Math.floor(Date.now() / 1000);
+      const expiresAt = params.expiresAt ?? now + HOUR;
+      const fiatPayBy = params.fiatPayBy ?? now + 24 * HOUR;
+      const fiatConfirmBy = params.fiatConfirmBy ?? now + 48 * HOUR;
 
-      const content: SwapRequestContent = {
-        version: 1,
-        swap_id: swapId,
-        swap_type: params.swapType,
-        agent: params.agentPubkey,
-        customer: myPubkey,
-        escrow_reference: params.escrowReference,
-        fiat: {
-          currency: params.fiatCurrency,
-          amount: params.fiatAmount,
+      // Validate: expires_at < fiat_pay_by < fiat_confirm_by
+      if (expiresAt >= fiatPayBy) throw new Error('Acceptance deadline must be before fiat payment deadline');
+      if (fiatPayBy >= fiatConfirmBy) throw new Error('Fiat payment deadline must be before confirmation deadline');
+
+      const direction = swapTypeToDirection(params.swapType);
+
+      const content: CoordinationRootContent = {
+        version: PONTMORE_PIP02_VERSION,
+        profile: PONTMORE_SWAP_PROFILE,
+        terms: {
+          direction,
+          fiat: {
+            currency: params.fiatCurrency,
+            amount: params.fiatAmount,
+          },
+          bitcoin: {
+            amount: params.bitcoinAmount,
+            unit: 'sat',
+            network: params.bitcoinNetwork,
+          },
+          payment_channel: params.paymentChannel,
+          deadlines: {
+            fiat_pay_by: fiatPayBy,
+            fiat_confirm_by: fiatConfirmBy,
+          },
         },
-        bitcoin: {
-          amount_sats: params.amountSats,
-          network: 'lightning',
-        },
-        expiry,
+        expires_at: expiresAt,
       };
 
+      // Build participant tags with roles
+      const tags: string[][] = [
+        ['d', 'coordination'],
+        ['alt', `Pontmore coordination: ${direction} ${params.fiatCurrency} ${params.fiatAmount} → ${params.bitcoinAmount} sats`],
+        // Application participants
+        ['p', params.agentPubkey, '', 'swap/agent'],
+        ['p', params.customerPubkey, '', 'swap/customer'],
+        // Escrow authority
+        ['p', params.escrowPubkey, '', 'core/escrow'],
+        // Escrow descriptor references (exact event + address)
+        ['e', params.escrowDescriptorId, '', 'escrow-version'],
+        ['a', params.escrowDescriptorCoordinate, '', 'escrow'],
+      ];
+
+      // Resolver (optional — enables disputes)
+      if (params.resolverPubkey) {
+        tags.push(['p', params.resolverPubkey, '', 'core/resolver']);
+      }
+
       const event = await publishEvent({
-        kind: PONTMORE_SWAP_REQUEST_KIND,
+        kind: PONTMORE_COORDINATION_ROOT_KIND,
         content: JSON.stringify(content),
-        tags: [
-          ['d', swapId],
-          ['t', params.swapType],
-          ['p', params.agentPubkey],
-        ],
+        tags,
       });
 
       // Store locally
-      upsertLocalSwap({
-        swapId,
+      upsertLocalCoord({
+        coordinationId: event.id,
         swapType: params.swapType,
         agentPubkey: params.agentPubkey,
-        customerPubkey: myPubkey,
-        amountSats: params.amountSats,
+        customerPubkey: params.customerPubkey,
+        bitcoinAmount: params.bitcoinAmount,
         fiatAmount: params.fiatAmount,
         fiatCurrency: params.fiatCurrency,
-        escrowReference: params.escrowReference,
-        state: 'requested',
+        paymentChannel: params.paymentChannel,
+        state: 'proposed',
         createdAt: event.created_at,
         updatedAt: event.created_at,
         direction: 'outgoing',
-        requestId: event.id,
+        rootEventId: event.id,
       });
 
-      // Publish initial snapshot (kind 30362)
-      await publishSnapshot(swapId, 'requested', {
-        ...params,
-        escrowReference: params.escrowReference,
-      }, event.created_at);
-
-      return swapId;
+      return event.id;
     },
-    onSuccess: (swapId) => {
+    onSuccess: (coordinationId) => {
       toast({
-        title: 'Swap request published',
-        description: `Swap ${swapId} is now on the Pontmore network.`,
+        title: 'Coordination proposed',
+        description: `Coordination ${coordinationId.slice(0, 12)}… is on the Pontmore network.`,
       });
       queryClient.invalidateQueries({ queryKey: ['pontmore'] });
     },
     onError: (error) => {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       toast({
-        title: 'Failed to publish swap request',
+        title: 'Failed to publish coordination root',
         description: msg,
         variant: 'destructive',
       });
     },
   });
 
-  /** Publish a swap snapshot (kind 30362) — replaceable materialized view. */
-  const publishSnapshot = useCallback(
-    async (
-      swapId: string,
-      state: SwapState,
-      params: {
-        agentPubkey: string;
-        amountSats: number;
-        fiatAmount: number;
-        fiatCurrency: string;
-        escrowReference: string;
-        swapType: SwapType;
-      },
-      createdAt: number,
-    ) => {
-      if (!myPubkey) return;
-
-      const snapshot: SwapSnapshotContent = {
-        swap_id: swapId,
-        current_state: state,
-        agent: params.agentPubkey,
-        customer: myPubkey,
-        swap_type: params.swapType,
-        bitcoin_amount_sats: params.amountSats,
-        fiat_amount: params.fiatAmount,
-        fiat_currency: params.fiatCurrency,
-        escrow_reference: params.escrowReference,
-        updated_at: Math.floor(Date.now() / 1000),
-      };
-
-      try {
-        await publishEvent({
-          kind: PONTMORE_SWAP_SNAPSHOT_KIND,
-          content: JSON.stringify(snapshot),
-          tags: [
-            ['d', swapId],
-            ['t', params.swapType],
-          ],
-        });
-      } catch {
-        // snapshot is an optimization — failure is non-fatal
-      }
-    },
-    [myPubkey, publishEvent],
-  );
-
   /**
-   * Publish a swap transition (kind 7301) — advance the state machine.
+   * Publish a coordination action (kind 7301) — advance the chain.
+   * The action references the root and the predecessor (prev).
    */
-  const publishTransition = useMutation({
-    mutationFn: async (params: {
-      swapId: string;
-      newState: SwapState;
-      prevState: SwapState;
-      actorRole: 'agent' | 'customer' | 'system';
-      reason: string;
-    }) => {
-      const content: SwapTransitionContent = {
-        swap_id: params.swapId,
-        state: params.newState,
-        prev_state: params.prevState,
-        actor_role: params.actorRole,
-        reason: params.reason,
-        created_at: Math.floor(Date.now() / 1000),
+  const publishCoordinationAction = useMutation({
+    mutationFn: async (params: PublishActionParams) => {
+      if (!myPubkey) throw new Error('Not logged in');
+
+      const content: CoordinationActionContent = {
+        version: PONTMORE_PIP02_VERSION,
+        action: params.action,
+        data: params.data,
       };
 
       const event = await publishEvent({
-        kind: PONTMORE_SWAP_TRANSITION_KIND,
+        kind: PONTMORE_COORDINATION_ACTION_KIND,
         content: JSON.stringify(content),
         tags: [
-          ['d', params.swapId],
-          ['e', params.swapId],
+          ['e', params.coordinationId, '', 'root'],
+          ['e', params.prevEventId, '', 'prev'],
         ],
       });
 
-      // Update local record
-      setLocalSwaps((prev) =>
+      // Update local record state
+      setLocalCoord((prev) =>
         prev.map((s) =>
-          s.swapId === params.swapId
-            ? { ...s, state: params.newState, updatedAt: content.created_at }
+          s.coordinationId === params.coordinationId
+            ? { ...s, state: deriveStateFromAction(params.action, s.state, params.data), updatedAt: event.created_at }
             : s,
         ),
       );
@@ -267,7 +279,7 @@ export function useSwapStateMachine() {
     onError: (error) => {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       toast({
-        title: 'Failed to publish transition',
+        title: 'Failed to publish action',
         description: msg,
         variant: 'destructive',
       });
@@ -275,325 +287,164 @@ export function useSwapStateMachine() {
   });
 
   /**
-   * Publish swap evidence (kind 7302) — payment proof, payout proof, etc.
-   * Per PIP-02, evidence SHOULD default to reference-style publication.
+   * Fetch the full coordination state for a given coordination ID (root event ID).
+   * Queries the root + all actions, then builds the materialized coordination.
    */
-  const publishEvidence = useMutation({
-    mutationFn: async (params: {
-      swapId: string;
-      evidenceType: string;
-      reference: string;
-      description?: string;
-    }) => {
-      const content: SwapEvidenceContent = {
-        swap_id: params.swapId,
-        evidence_type: params.evidenceType,
-        reference: params.reference,
-        description: params.description,
-        created_at: Math.floor(Date.now() / 1000),
-      };
-
-      const event = await publishEvent({
-        kind: PONTMORE_SWAP_EVIDENCE_KIND,
-        content: JSON.stringify(content),
-        tags: [
-          ['e', params.swapId],
-        ],
-      });
-
-      return event;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pontmore'] });
-    },
-    onError: (error) => {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      toast({
-        title: 'Failed to publish evidence',
-        description: msg,
-        variant: 'destructive',
-      });
-    },
-  });
-
-  /**
-   * Publish a swap note (kind 7304) — optional human-readable operational note.
-   */
-  const publishNote = useMutation({
-    mutationFn: async (params: {
-      swapId: string;
-      note: string;
-    }) => {
-      const event = await publishEvent({
-        kind: PONTMORE_SWAP_NOTE_KIND,
-        content: params.note,
-        tags: [
-          ['e', params.swapId],
-        ],
-      });
-      return event;
-    },
-  });
-
-  /**
-   * Fetch the full swap state for a given swap ID.
-   * Queries the immutable request + transitions + evidence, then builds
-   * the materialized swap object.
-   */
-  const useSwap = (swapId: string | undefined) =>
-    useQuery<PontmoreSwap | null, Error>({
-      queryKey: ['pontmore', 'swap', swapId ?? ''],
+  const useCoordination = (coordinationId: string | undefined) =>
+    useQuery<PontmoreCoordination | null, Error>({
+      queryKey: ['pontmore', 'coordination', coordinationId ?? ''],
       queryFn: async (c) => {
-        if (!swapId || !myPubkey) return null;
+        if (!coordinationId || !myPubkey) return null;
 
-        // Query swap request + transitions + evidence in one round-trip
+        // Query root + actions in one round-trip
         const events = await nostr.query(
           [
-            // Swap request (root event)
-            { kinds: [PONTMORE_SWAP_REQUEST_KIND], '#d': [swapId], limit: 1 },
-            // Transitions (append-only) — query by both #d and #e for reliability
-            { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#d': [swapId], limit: 100 },
-            { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#e': [swapId], limit: 100 },
-            // Evidence
-            { kinds: [PONTMORE_SWAP_EVIDENCE_KIND], '#e': [swapId], limit: 50 },
+            // Root event
+            { kinds: [PONTMORE_COORDINATION_ROOT_KIND], ids: [coordinationId], limit: 1 },
+            // Actions referencing the root via #e (root marker)
+            { kinds: [PONTMORE_COORDINATION_ACTION_KIND], '#e': [coordinationId], limit: 200 },
           ],
           { signal: c.signal },
         );
 
-        // Find the request event (kind 7300)
-        const requestEvent = events.find((e) => e.kind === PONTMORE_SWAP_REQUEST_KIND);
-        if (!requestEvent) return null;
+        const rootEvent = events.find((e) => e.kind === PONTMORE_COORDINATION_ROOT_KIND);
+        if (!rootEvent) return null;
 
-        // Deduplicate transitions by event id
-        const seenIds = new Set<string>();
-        const transitionEvents = events.filter(
-          (e) => e.kind === PONTMORE_SWAP_TRANSITION_KIND && !seenIds.has(e.id) && seenIds.add(e.id)
-        );
-        const evidenceEvents = events.filter((e) => e.kind === PONTMORE_SWAP_EVIDENCE_KIND);
+        const actionEvents = events.filter((e) => e.kind === PONTMORE_COORDINATION_ACTION_KIND);
 
-        return buildSwapFromEvents(
-          requestEvent,
-          transitionEvents,
-          evidenceEvents,
-          myPubkey,
-        );
+        return buildCoordinationFromEvents(rootEvent, actionEvents, myPubkey);
       },
-      enabled: !!swapId && !!myPubkey,
+      enabled: !!coordinationId && !!myPubkey,
       staleTime: 5_000,
       refetchInterval: 10_000,
     });
 
   /**
-   * Fetch all swaps involving the current user (as customer or agent).
-   *
-   * Queries snapshots (kind 30362) + swap requests (kind 7300) for initial
-   * data, then fetches ALL transition events (kind 7301) for those swap IDs
-   * so the customer sees live state updates as the agent advances the swap.
+   * Fetch all coordinations involving the current user (as proposer or participant).
    */
-  const useMySwaps = () =>
-    useQuery<PontmoreSwap[], Error>({
-      queryKey: ['pontmore', 'my-swaps', myPubkey ?? ''],
+  const useMyCoordinations = () =>
+    useQuery<PontmoreCoordination[], Error>({
+      queryKey: ['pontmore', 'my-coordinations', myPubkey ?? ''],
       queryFn: async (c) => {
         if (!myPubkey) return [];
 
-        // Query snapshots published by the user (as customer) AND swap
-        // requests where the user is the tagged agent (as agent).
-        const [snapshotEvents, incomingRequests] = await Promise.all([
+        // Query roots where I'm the author (proposer) or tagged participant
+        const [proposedRoots, incomingRoots] = await Promise.all([
           nostr.query(
-            [
-              { kinds: [PONTMORE_SWAP_SNAPSHOT_KIND], authors: [myPubkey], limit: 50 },
-            ],
+            [{ kinds: [PONTMORE_COORDINATION_ROOT_KIND], authors: [myPubkey], limit: 50 }],
             { signal: c.signal },
           ),
           nostr.query(
-            [
-              { kinds: [PONTMORE_SWAP_REQUEST_KIND], '#p': [myPubkey], limit: 50 },
-            ],
+            [{ kinds: [PONTMORE_COORDINATION_ROOT_KIND], '#p': [myPubkey], limit: 50 }],
             { signal: c.signal },
           ),
         ]);
 
-        const swaps: PontmoreSwap[] = [];
-        const seenSwapIds = new Set<string>();
+        // Deduplicate roots by event id
+        const seenIds = new Set<string>();
+        const rootEvents = [...proposedRoots, ...incomingRoots].filter((e) => {
+          if (seenIds.has(e.id)) return false;
+          seenIds.add(e.id);
+          return true;
+        });
 
-        // Process snapshots (outgoing — I'm the customer)
-        for (const event of snapshotEvents) {
-          const snapshot = parseSwapSnapshot(event);
-          if (!snapshot) continue;
-          if (seenSwapIds.has(snapshot.swap_id)) continue;
-          seenSwapIds.add(snapshot.swap_id);
-
-          swaps.push({
-            swapId: snapshot.swap_id,
-            swapType: snapshot.swap_type,
-            state: snapshot.current_state,
-            agentPubkey: snapshot.agent,
-            customerPubkey: snapshot.customer,
-            bitcoinAmountSats: snapshot.bitcoin_amount_sats,
-            fiatAmount: snapshot.fiat_amount,
-            fiatCurrency: snapshot.fiat_currency,
-            escrowReference: snapshot.escrow_reference,
-            expiry: 0,
-            createdAt: event.created_at,
-            updatedAt: snapshot.updated_at,
-            direction: snapshot.customer === myPubkey ? 'outgoing' : 'incoming',
-            transitions: [],
-            evidence: [],
-          });
+        if (rootEvents.length === 0) {
+          // Fall back to local ledger
+          return localCoord.map((local) => localToCoordination(local, myPubkey));
         }
 
-        // Process incoming requests (I'm the agent)
-        for (const reqEvent of incomingRequests) {
-          const swapId = reqEvent.tags.find(([n]) => n === 'd')?.[1];
-          if (!swapId || seenSwapIds.has(swapId)) continue;
-          seenSwapIds.add(swapId);
+        // Fetch all actions for these roots in one batch
+        const rootIds = rootEvents.map((e) => e.id);
+        const actionEvents = await nostr.query(
+          [{ kinds: [PONTMORE_COORDINATION_ACTION_KIND], '#e': rootIds, limit: Math.max(1000, rootIds.length * 50) }],
+          { signal: c.signal },
+        );
 
-          const request = parseSwapRequest(reqEvent);
-          if (!request) continue;
-
-          swaps.push({
-            swapId: request.swap_id,
-            swapType: request.swap_type,
-            state: 'requested',
-            agentPubkey: request.agent,
-            customerPubkey: request.customer,
-            bitcoinAmountSats: request.bitcoin.amount_sats,
-            fiatAmount: request.fiat.amount,
-            fiatCurrency: request.fiat.currency,
-            escrowReference: request.escrow_reference,
-            expiry: request.expiry,
-            createdAt: reqEvent.created_at,
-            updatedAt: reqEvent.created_at,
-            direction: 'incoming',
-            transitions: [],
-            evidence: [],
-          });
+        // Group actions by root
+        const actionsByRoot = new Map<string, typeof actionEvents>();
+        for (const evt of actionEvents) {
+          const rootRef = evt.tags.find(([n, , , marker]) => n === 'e' && marker === 'root')?.[1];
+          if (!rootRef) continue;
+          const arr = actionsByRoot.get(rootRef) ?? [];
+          arr.push(evt);
+          actionsByRoot.set(rootRef, arr);
         }
 
-        // Merge with local ledger for swaps that may not have snapshots yet
-        for (const local of localSwaps) {
-          if (!seenSwapIds.has(local.swapId)) {
-            seenSwapIds.add(local.swapId);
-            swaps.push({
-              swapId: local.swapId,
-              swapType: local.swapType,
-              state: local.state,
-              agentPubkey: local.agentPubkey,
-              customerPubkey: local.customerPubkey,
-              bitcoinAmountSats: local.amountSats,
-              fiatAmount: local.fiatAmount,
-              fiatCurrency: local.fiatCurrency,
-              escrowReference: local.escrowReference,
-              expiry: 0,
-              createdAt: local.createdAt,
-              updatedAt: local.updatedAt,
-              direction: local.direction,
-              transitions: [],
-              evidence: [],
-            });
+        // Build coordinations
+        const coordinations: PontmoreCoordination[] = [];
+        for (const rootEvent of rootEvents) {
+          const actions = actionsByRoot.get(rootEvent.id) ?? [];
+          const coord = buildCoordinationFromEvents(rootEvent, actions, myPubkey);
+          if (coord) coordinations.push(coord);
+        }
+
+        // Merge with local ledger for coordinations that may not have synced yet
+        for (const local of localCoord) {
+          if (!seenIds.has(local.coordinationId)) {
+            coordinations.push(localToCoordination(local, myPubkey));
           }
         }
 
-        // ── Fetch transitions for ALL swap IDs ──────────────────────
-        // This is the critical piece: without it, the customer's swap state
-        // is frozen at "requested" because the agent's transitions (kind 7301)
-        // are never queried. We fetch all transitions for all swap IDs in one
-        // batch, then rebuild each swap's state from the latest transition.
-        const allSwapIds = swaps.map((s) => s.swapId);
-        if (allSwapIds.length > 0) {
-          const transitionEvents = await nostr.query(
-            [
-              { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#d': allSwapIds, limit: 500 },
-              { kinds: [PONTMORE_SWAP_TRANSITION_KIND], '#e': allSwapIds, limit: 500 },
-            ],
-            { signal: c.signal },
-          );
-
-          // Deduplicate by event id
-          const seenEventIds = new Set<string>();
-          const uniqueTransitions = transitionEvents.filter((e) => {
-            if (seenEventIds.has(e.id)) return false;
-            seenEventIds.add(e.id);
-            return true;
-          });
-
-          // Parse and group transitions by swap ID
-          const transitionsBySwap = new Map<string, {
-            state: SwapState;
-            prevState: SwapState;
-            actorRole: string;
-            reason: string;
-            createdAt: number;
-            eventId: string;
-          }[]>();
-
-          for (const evt of uniqueTransitions) {
-            const parsed = parseSwapTransition(evt);
-            if (!parsed) continue;
-
-            // Match by 'd' or 'e' tag
-            const swapId = evt.tags.find(([n]) => n === 'd')?.[1]
-              ?? evt.tags.find(([n]) => n === 'e')?.[1];
-            if (!swapId) continue;
-
-            const arr = transitionsBySwap.get(swapId) ?? [];
-            arr.push({
-              state: parsed.state,
-              prevState: parsed.prev_state,
-              actorRole: parsed.actor_role,
-              reason: parsed.reason,
-              createdAt: parsed.created_at,
-              eventId: evt.id,
-            });
-            transitionsBySwap.set(swapId, arr);
-          }
-
-          // Apply transitions to each swap — update state + transitions list
-          for (const swap of swaps) {
-            const transitions = transitionsBySwap.get(swap.swapId);
-            if (!transitions || transitions.length === 0) continue;
-
-            // Sort by created_at ascending
-            transitions.sort((a, b) => a.createdAt - b.createdAt);
-
-            // Latest transition determines current state
-            const latest = transitions[transitions.length - 1];
-            swap.state = latest.state;
-            swap.updatedAt = latest.createdAt;
-            swap.transitions = transitions;
-          }
-        }
-
-        return swaps.sort((a, b) => b.updatedAt - a.updatedAt);
+        return coordinations.sort((a, b) => b.rootEvent.created_at - a.rootEvent.created_at);
       },
       enabled: !!myPubkey,
       staleTime: 10_000,
       refetchInterval: 15_000,
     });
 
-  /** All swaps from local ledger (sorted by most recent). */
-  const swaps = useCallback((): LocalSwapRecord[] => {
-    return [...localSwaps].sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [localSwaps]);
+  /** All coordinations from local ledger (sorted by most recent). */
+  const localCoordinations = useCallback((): LocalCoordinationRecord[] => {
+    return [...localCoord].sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [localCoord]);
 
-  /** Clear local swap history. */
+  /** Clear local coordination history. */
   const clearHistory = useCallback(() => {
-    setLocalSwaps([]);
+    setLocalCoord([]);
     queryClient.invalidateQueries({ queryKey: ['pontmore'] });
-  }, [setLocalSwaps, queryClient]);
+  }, [setLocalCoord, queryClient]);
 
   return {
     // Mutations
-    publishSwapRequest,
-    publishTransition,
-    publishEvidence,
-    publishNote,
+    publishCoordinationRoot,
+    publishCoordinationAction,
     // Queries
-    useSwap,
-    useMySwaps,
+    useCoordination,
+    useMyCoordinations,
     // Local state
-    localSwaps: swaps(),
+    localCoordinations: localCoordinations(),
     clearHistory,
-    upsertLocalSwap,
+    upsertLocalCoord,
+  };
+}
+
+/** Convert a local record to a minimal PontmoreCoordination for display. */
+function localToCoordination(local: LocalCoordinationRecord, myPubkey: string): PontmoreCoordination {
+  return {
+    coordinationId: local.coordinationId,
+    rootEvent: {
+      id: local.coordinationId,
+      pubkey: local.direction === 'outgoing' ? myPubkey : local.agentPubkey,
+      created_at: local.createdAt,
+    },
+    profile: PONTMORE_SWAP_PROFILE,
+    terms: {
+      direction: swapTypeToDirection(local.swapType),
+      fiat: { currency: local.fiatCurrency, amount: local.fiatAmount },
+      bitcoin: { amount: local.bitcoinAmount, unit: 'sat', network: 'lightning' },
+      payment_channel: local.paymentChannel,
+      deadlines: local.deadlines ?? { fiat_pay_by: 0, fiat_confirm_by: 0 },
+    },
+    expiresAt: local.expiresAt ?? 0,
+    participants: [
+      { pubkey: local.agentPubkey, role: 'swap/agent' },
+      { pubkey: local.customerPubkey, role: 'swap/customer' },
+    ],
+    escrowDescriptorId: '',
+    escrowDescriptorCoordinate: '',
+    actions: [],
+    state: local.state,
+    disputed: false,
+    direction: local.direction,
+    swapType: local.swapType,
   };
 }

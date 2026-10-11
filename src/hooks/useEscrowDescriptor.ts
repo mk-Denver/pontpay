@@ -2,6 +2,8 @@
  * useEscrowDescriptor — publish and query PIP-01 escrow descriptor events
  * (kind 30361, addressable). An agent must publish at least one escrow
  * descriptor and reference it from their agent definition (kind 30360).
+ *
+ * PIP-01 v2 content: { version, escrow_type, networks, expires_at, service? }
  */
 
 import { useNostr } from '@nostrify/react';
@@ -17,46 +19,37 @@ import {
 export interface EscrowDescriptorInput {
   /** Stable identifier (d-tag), usually "default". */
   identifier: string;
-  /** Escrow subtype: "lightning_hold_invoice", "custodial_escrow", or "cashu_escrow". */
+  /** Escrow type: "lightning_hold_invoice", "custodial_escrow", or "cashu_escrow". */
   escrowType: string;
-  /** Settlement networks: ["bitcoin", "lightning", "cashu"]. */
+  /** Settlement networks (lowercase). */
   networks: string[];
-  /** Funding rules: m of n threshold (e.g. 1 of 1 for single-funder). */
-  fundingRules: { fundingThreshold: number; participantCount: number };
-  /** Dispute policy identifier (e.g. "pip03"). */
-  disputeRules: { policy: string };
-  /** Reference format: "bolt11", "bolt11_or_custodial_escrow_reference", etc. */
-  referenceFormat: string;
+  /** Unix timestamp after which the descriptor cannot be selected. */
+  expiresAt: number;
+  /** Optional service schema type. */
+  serviceSchemaType?: string;
+  /** Optional service schema URL (https://). */
+  serviceSchemaUrl?: string;
 }
 
 /** Build the JSON content for a kind 30361 event per PIP-01. */
 function buildEscrowContent(input: EscrowDescriptorInput): string {
+  if (input.expiresAt <= Math.floor(Date.now() / 1000)) {
+    throw new Error('expiresAt must be a future timestamp');
+  }
   const content: Record<string, unknown> = {
     version: 1,
     escrow_type: input.escrowType,
-    networks: input.networks,
-    funding_rules: {
-      funding_threshold: input.fundingRules.fundingThreshold,
-      participant_count: input.fundingRules.participantCount,
-    },
-    dispute_rules: {
-      policy: input.disputeRules.policy,
-    },
-    reference_format: input.referenceFormat,
-    updated_at: Math.floor(Date.now() / 1000),
+    networks: input.networks.map((n) => n.toLowerCase()),
+    expires_at: input.expiresAt,
   };
 
-  // Add implementations array for custodial subtype (PIP-01)
-  if (input.escrowType === 'custodial_escrow') {
-    content.implementations = [
-      {
-        network: 'lightning',
-        invoice_asset: 'BTC',
-        invoice_currency: 'sats',
-        invoice_amount_rule: 'exact',
-        payout_network: 'lightning',
+  if (input.serviceSchemaType && input.serviceSchemaUrl && input.serviceSchemaUrl.startsWith('https://')) {
+    content.service = {
+      schema: {
+        type: input.serviceSchemaType,
+        url: input.serviceSchemaUrl,
       },
-    ];
+    };
   }
 
   return JSON.stringify(content);
@@ -74,11 +67,11 @@ export function useEscrowDescriptor() {
       const content = buildEscrowContent(input);
       const tags: string[][] = [
         ['d', input.identifier || 'default'],
+        ['alt', `Pontmore escrow: ${input.escrowType}`],
       ];
 
-      // Emit network tags for relay filtering (PIP-01)
       for (const network of input.networks) {
-        tags.push(['network', network]);
+        tags.push(['t', `pontmore-network:${network.toLowerCase()}`]);
       }
 
       const event = await publishEvent({

@@ -1,21 +1,23 @@
 import { useSeoMeta } from '@unhead/react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { nip19 } from 'nostr-tools';
 import { Link } from 'react-router-dom';
 import {
   Store,
-  Zap,
   Save,
   Trash2,
   Loader2,
   CheckCircle2,
-  MapPin,
-  Coins,
-  Phone,
-  Clock,
   ArrowLeft,
   Globe,
   Info,
   ArrowRight,
+  ShieldCheck,
+  Coins,
+  Tag,
+  AlertCircle,
+  Share2,
+  Check,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Button } from '@/components/ui/button';
@@ -23,7 +25,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import {
   AlertDialog,
@@ -48,68 +49,46 @@ import {
   useAgentRegistration,
   type AgentRegistrationInput,
 } from '@/hooks/useAgentRegistration';
-import { formatSats } from '@/lib/pontmore';
-import type { AgentCapabilities } from '@/lib/pontmore';
+import { useAuthor } from '@/hooks/useAuthor';
+import type { SwapType } from '@/lib/pontmore';
+import { PONTMORE_ESCROW_KIND } from '@/lib/pontmore';
+import { buildFullAgentLink } from '@/lib/agentLink';
 
 const ALL_CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
-const SWAP_TYPES = ['buy', 'sell'];
-const PAYMENT_CHANNELS = ['bank_transfer', 'mobile_money', 'm_pesa', 'ach', 'sepa', 'paypal'];
-const SETTLEMENT_NETWORKS = ['lightning', 'bitcoin'];
-const REGIONS = [
-  'East Africa', 'West Africa', 'Southern Africa', 'North Africa',
-  'Europe', 'North America', 'South America', 'Asia', 'Global',
+const ESCROW_TYPES = [
+  { value: 'custodial_escrow', label: 'Custodial Escrow' },
+  { value: 'lightning_hold_invoice', label: 'Lightning Hold Invoice' },
+  { value: 'cashu_escrow', label: 'Cashu Escrow' },
 ];
-
-function defaultInput(): AgentRegistrationInput {
-  return {
-    identifier: 'agent',
-    name: '',
-    about: '',
-    capabilities: {
-      swapTypes: ['buy', 'sell'],
-      fiatCurrencies: [],
-      paymentChannels: ['cash', 'mobile_money'],
-      settlementNetworks: ['lightning'],
-      regions: [],
-      minAmount: 1000,
-      maxAmount: 500000,
-      pricingMargin: '1.5',
-    },
-    pricingPolicy: 'percentage_margin',
-    fiatCurrencies: [],
-    relays: [],
-    escrowDTag: 'escrow',
-    escrowSummary: 'custodial_escrow',
-  };
-}
+const PAYMENT_CHANNELS = ['mpesa-ke-kes@1', 'bank-transfer-ke@1', 'mobile-money-ugx@1', 'ach-usd@1', 'sepa-eur@1'];
+const BITCOIN_NETWORKS = ['mainnet', 'testnet'];
+const SETTLEMENT_LAYERS = ['lightning', 'bitcoin-onchain'];
 
 export default function AgentRegistrationPage() {
   const { user } = useCurrentUser();
-  const { myAgent, isRegistered, isLoading, publishRegistration, deleteRegistration, agentToInput, defaultRelays } =
+  const { myAgent, isRegistered, isLoading, publishRegistration, deleteRegistration, defaultRelays, defaultInput } =
     useAgentRegistration();
 
-  const [input, setInput] = useState<AgentRegistrationInput>(defaultInput);
-  const [loadedExisting, setLoadedExisting] = useState(false);
+  const [input, setInput] = useState<AgentRegistrationInput>(() => ({
+    ...defaultInput(),
+    relays: defaultRelays.length > 0 ? defaultRelays : [],
+  }));
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   useSeoMeta({
     title: 'Register as Agent — PontPay',
     description: 'Register as a Pontmore agent and become discoverable on the network.',
   });
 
-  // Pre-fill form with existing registration + default relays
-  useEffect(() => {
-    if (myAgent && !loadedExisting) {
-      setInput(agentToInput(myAgent));
-      setLoadedExisting(true);
-    }
-  }, [myAgent, loadedExisting, agentToInput]);
+  // Fetch profile name/about for pre-fill
+  const author = useAuthor(user?.pubkey);
+  const profileName = author.data?.metadata?.name ?? '';
+  const profileAbout = author.data?.metadata?.about ?? '';
 
-  // Set default relays for new registrations
-  useEffect(() => {
-    if (!isRegistered && input.relays.length === 0 && defaultRelays.length > 0) {
-      setInput((prev) => ({ ...prev, relays: defaultRelays }));
-    }
-  }, [isRegistered, input.relays, defaultRelays]);
+  // Compute "now" once for relative day displays (avoids impure Date.now in render)
+  const [nowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const escrowExpiryDays = Math.max(1, Math.floor((input.escrowExpiresAt - nowSec) / 86400));
+  const offerExpiryDays = Math.max(1, Math.floor((input.offerExpiresAt - nowSec) / 86400));
 
   if (!user) {
     return (
@@ -140,20 +119,36 @@ export default function AgentRegistrationPage() {
     value: AgentRegistrationInput[K],
   ) => setInput((prev) => ({ ...prev, [key]: value }));
 
-  const handleCapability = <K extends keyof AgentCapabilities>(
-    key: K,
-    value: AgentCapabilities[K],
-  ) => setInput((prev) => ({
-    ...prev,
-    capabilities: { ...prev.capabilities, [key]: value },
-  }));
-
   const toggleArrayItem = <T,>(arr: T[], item: T): T[] =>
     arr.includes(item) ? arr.filter((i) => i !== item) : [...arr, item];
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.name.trim()) return;
+    if (!input.name.trim() || !input.price.trim()) {
+      setValidationError('Name and price are required.');
+      return;
+    }
+    if (parseFloat(input.faMin) > parseFloat(input.faMax)) {
+      setValidationError('Minimum fiat amount cannot exceed maximum.');
+      return;
+    }
+    if (input.offerExpiresAt <= nowSec) {
+      setValidationError('Offer expiry must be in the future.');
+      return;
+    }
+    if (input.escrowExpiresAt <= nowSec) {
+      setValidationError('Escrow descriptor expiry must be in the future.');
+      return;
+    }
+    if (input.paymentChannels.length === 0) {
+      setValidationError('At least one payment channel is required.');
+      return;
+    }
+    if (input.escrowNetworks.length === 0) {
+      setValidationError('At least one settlement network is required.');
+      return;
+    }
+    setValidationError(null);
     publishRegistration.mutate(input);
   };
 
@@ -179,7 +174,7 @@ export default function AgentRegistrationPage() {
                 {isRegistered ? 'Edit Agent Definition' : 'Become a Pontmore Agent'}
               </h1>
               <p className="mt-1 text-muted-foreground">
-                PIP-00 agent definition · kind 30360
+                PIP-00 agent definition · kind 30360 + NIP-69 offer
               </p>
             </div>
           </div>
@@ -200,29 +195,22 @@ export default function AgentRegistrationPage() {
               <div className="flex-1">
                 <p className="text-sm font-medium text-green-600">You are a registered agent</p>
                 <p className="mt-0.5 text-sm text-muted-foreground">
-                  Your listing <strong>{myAgent.name}</strong> is live and discoverable
-                  on the Pontmore network.
+                  Your listing is live and discoverable on the Pontmore network.
+                  Capabilities: {myAgent.capabilities.join(', ')}
                 </p>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {myAgent.fiatCurrencies.map((c) => (
-                    <Badge key={c} variant="secondary" className="text-xs">{c}</Badge>
-                  ))}
-                  {myAgent.capabilities.regions.map((r) => (
-                    <Badge key={r} variant="outline" className="text-xs">{r}</Badge>
-                  ))}
-                </div>
               </div>
             </CardContent>
           </Card>
         ) : null}
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* PIP-00: Basic Information */}
+          {/* Agent Identity (name/about → kind 0) */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Agent Identity (PIP-00)</CardTitle>
+              <CardTitle className="text-lg">Agent Identity</CardTitle>
               <CardDescription>
-                Public agent capability and discovery record.
+                Name and about are published in your Nostr profile (kind 0).
+                Capabilities are published in the PIP-00 agent definition (kind 30360).
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -230,7 +218,7 @@ export default function AgentRegistrationPage() {
                 <Label htmlFor="name">Agent name *</Label>
                 <Input
                   id="name"
-                  placeholder="e.g. Nairobi Central Exchange"
+                  placeholder={profileName || 'e.g. Nairobi Central Exchange'}
                   value={input.name}
                   onChange={(e) => handleField('name', e.target.value)}
                   required
@@ -241,78 +229,74 @@ export default function AgentRegistrationPage() {
                 <Label htmlFor="about">About / description</Label>
                 <Textarea
                   id="about"
-                  placeholder="Describe your services, experience, and what makes you a trusted agent."
+                  placeholder={profileAbout || 'Describe your services, experience, and what makes you a trusted agent.'}
                   value={input.about}
                   onChange={(e) => handleField('about', e.target.value)}
                   rows={3}
                 />
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <Label htmlFor="identifier">Profile identifier (d-tag)</Label>
-                  <Input
-                    id="identifier"
-                    className="font-mono text-sm"
-                    placeholder="agent"
-                    value={input.identifier}
-                    onChange={(e) => handleField('identifier', e.target.value)}
-                    disabled={isRegistered}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Usually <code className="rounded bg-muted px-1">agent</code>. Use
-                    <code className="rounded bg-muted px-1">agent:ke</code> for regional profiles.
-                  </p>
-                </div>
-                <div>
-                  <Label htmlFor="pricing">Pricing policy</Label>
-                  <Select
-                    value={input.pricingPolicy}
-                    onValueChange={(v) => handleField('pricingPolicy', v)}
-                  >
-                    <SelectTrigger id="pricing">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="percentage_margin">Percentage margin</SelectItem>
-                      <SelectItem value="flat_fee">Flat fee per swap</SelectItem>
-                      <SelectItem value="tiered">Tiered pricing</SelectItem>
-                      <SelectItem value="negotiated">Negotiated per swap</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="flex items-center gap-2 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
+                <Tag className="h-4 w-4 shrink-0" />
+                <span>Capability: <code className="rounded bg-muted px-1">pontmore/swap@1</code> (published automatically)</span>
               </div>
             </CardContent>
           </Card>
 
-          {/* PIP-00: Capabilities */}
+          {/* Escrow Descriptor (PIP-01, kind 30361) */}
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
-                <Coins className="h-5 w-5" /> Capabilities
+                <ShieldCheck className="h-5 w-5" /> Escrow Descriptor
               </CardTitle>
               <CardDescription>
-                Declare what swap types, currencies, and channels you support.
+                PIP-01 escrow descriptor (kind 30361). Customers reference this to
+                create coordinations secured by your escrow.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Swap types */}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor="escrowType">Escrow type</Label>
+                  <Select
+                    value={input.escrowType}
+                    onValueChange={(v) => handleField('escrowType', v)}
+                  >
+                    <SelectTrigger id="escrowType"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {ESCROW_TYPES.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="escrowExpiresAt">Descriptor expiry (days from now)</Label>
+                  <Input
+                    id="escrowExpiresAt"
+                    type="number"
+                    min="1"
+                    value={escrowExpiryDays}
+                    onChange={(e) => { const d = parseInt(e.target.value || '30', 10); handleField('escrowExpiresAt', nowSec + (Number.isNaN(d) ? 30 : Math.max(1, d)) * 86400); }}
+                  />
+                </div>
+              </div>
+
               <div>
-                <Label>Supported swap types</Label>
+                <Label>Settlement networks</Label>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {SWAP_TYPES.map((type) => {
-                    const selected = input.capabilities.swapTypes.includes(type);
+                  {['lightning', 'bitcoin', 'cashu'].map((n) => {
+                    const selected = input.escrowNetworks.includes(n);
                     return (
                       <button
-                        key={type}
+                        key={n}
                         type="button"
-                        onClick={() => handleCapability('swapTypes', toggleArrayItem(input.capabilities.swapTypes, type))}
+                        onClick={() => handleField('escrowNetworks', toggleArrayItem(input.escrowNetworks, n))}
                         className={`rounded-lg border px-3 py-1.5 text-sm font-medium capitalize transition-all ${
                           selected ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'
                         }`}
                       >
-                        {type}
-                        {selected && <CheckCircle2 className="ml-1 inline h-3 w-3" />}
+                        {n}
                       </button>
                     );
                   })}
@@ -321,120 +305,188 @@ export default function AgentRegistrationPage() {
 
               <Separator />
 
-              {/* Fiat currencies */}
               <div>
-                <Label>Fiat currencies</Label>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {ALL_CURRENCIES.map((c) => {
-                    const selected = input.fiatCurrencies.includes(c);
-                    return (
-                      <button
-                        key={c}
-                        type="button"
-                        onClick={() => {
-                          handleField('fiatCurrencies', toggleArrayItem(input.fiatCurrencies, c));
-                          handleCapability('fiatCurrencies', toggleArrayItem(input.capabilities.fiatCurrencies, c));
-                        }}
-                        className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-all ${
-                          selected ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'
-                        }`}
-                      >
-                        {c}
-                        {selected && <CheckCircle2 className="ml-1 inline h-3 w-3" />}
-                      </button>
-                    );
-                  })}
+                <Label htmlFor="schemaUrl">Service schema URL (optional)</Label>
+                <Input
+                  id="schemaUrl"
+                  className="font-mono text-sm"
+                  placeholder="https://example.com/escrow-v1.openapi.json"
+                  value={input.serviceSchemaUrl ?? ''}
+                  onChange={(e) => handleField('serviceSchemaUrl', e.target.value)}
+                />
+                {input.serviceSchemaUrl && (
+                  <div className="mt-2">
+                    <Select
+                      value={input.serviceSchemaType || 'openapi'}
+                      onValueChange={(v) => handleField('serviceSchemaType', v)}
+                    >
+                      <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="openapi">OpenAPI</SelectItem>
+                        <SelectItem value="asyncapi">AsyncAPI</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <p className="mt-1 text-xs text-muted-foreground">
+                  PIP-01: service contains only a schema pointer. The endpoint and
+                  operations are defined by the referenced schema.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* NIP-69 Swap Offer (kind 38383) */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Coins className="h-5 w-5" /> Swap Offer (NIP-69)
+              </CardTitle>
+              <CardDescription>
+                Standing offer (kind 38383) advertising your price and fiat-amount
+                range for one currency and direction.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor="direction">Direction</Label>
+                  <Select
+                    value={input.direction}
+                    onValueChange={(v) => handleField('direction', v as SwapType)}
+                  >
+                    <SelectTrigger id="direction"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="sell">Sell (fiat → BTC, you provide Bitcoin)</SelectItem>
+                      <SelectItem value="buy">Buy (BTC → fiat, you provide fiat)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="currency">Fiat currency</Label>
+                  <Select
+                    value={input.currency}
+                    onValueChange={(v) => handleField('currency', v)}
+                  >
+                    <SelectTrigger id="currency"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {ALL_CURRENCIES.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <Label htmlFor="price">Price (fiat per BTC)</Label>
+                  <Input
+                    id="price"
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder="e.g. 8500000"
+                    value={input.price}
+                    onChange={(e) => handleField('price', e.target.value)}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="faMin">Min fiat amount</Label>
+                  <Input
+                    id="faMin"
+                    type="number"
+                    min="0"
+                    value={input.faMin}
+                    onChange={(e) => handleField('faMin', e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="faMax">Max fiat amount</Label>
+                  <Input
+                    id="faMax"
+                    type="number"
+                    min="0"
+                    value={input.faMax}
+                    onChange={(e) => handleField('faMax', e.target.value)}
+                  />
                 </div>
               </div>
 
               <Separator />
 
-              {/* Payment channels */}
               <div>
                 <Label>Payment channels</Label>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {PAYMENT_CHANNELS.map((ch) => {
-                    const selected = input.capabilities.paymentChannels.includes(ch);
+                    const selected = input.paymentChannels.includes(ch);
                     return (
                       <button
                         key={ch}
                         type="button"
-                        onClick={() => handleCapability('paymentChannels', toggleArrayItem(input.capabilities.paymentChannels, ch))}
-                        className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium capitalize transition-all ${
+                        onClick={() => handleField('paymentChannels', toggleArrayItem(input.paymentChannels, ch))}
+                        className={`rounded-lg border px-3 py-1.5 text-sm font-mono transition-all ${
                           selected ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'
                         }`}
                       >
-                        {ch.replace(/_/g, ' ')}
-                        {selected && <CheckCircle2 className="h-3 w-3" />}
+                        {ch}
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              <Separator />
-
-              {/* Regions */}
-              <div>
-                <Label className="flex items-center gap-1.5">
-                  <MapPin className="h-3.5 w-3.5" /> Regions served
-                </Label>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {REGIONS.map((r) => {
-                    const selected = input.capabilities.regions.includes(r);
-                    return (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => handleCapability('regions', toggleArrayItem(input.capabilities.regions, r))}
-                        className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-all ${
-                          selected ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'
-                        }`}
-                      >
-                        {r}
-                        {selected && <CheckCircle2 className="ml-1 inline h-3 w-3" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <Separator />
-
-              {/* Limits */}
               <div className="grid gap-4 sm:grid-cols-3">
                 <div>
-                  <Label htmlFor="minAmount">Min amount (sats)</Label>
-                  <Input
-                    id="minAmount"
-                    type="number"
-                    min="1"
-                    value={input.capabilities.minAmount || ''}
-                    onChange={(e) => handleCapability('minAmount', parseInt(e.target.value) || 0)}
-                  />
+                  <Label htmlFor="network">Bitcoin network</Label>
+                  <Select
+                    value={input.network}
+                    onValueChange={(v) => handleField('network', v)}
+                  >
+                    <SelectTrigger id="network"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {BITCOIN_NETWORKS.map((n) => (
+                        <SelectItem key={n} value={n} className="capitalize">{n}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
-                  <Label htmlFor="maxAmount">Max amount (sats)</Label>
-                  <Input
-                    id="maxAmount"
-                    type="number"
-                    min="1"
-                    value={input.capabilities.maxAmount || ''}
-                    onChange={(e) => handleCapability('maxAmount', parseInt(e.target.value) || 0)}
-                  />
+                  <Label htmlFor="layer">Settlement layer</Label>
+                  <Select
+                    value={input.layer}
+                    onValueChange={(v) => handleField('layer', v)}
+                  >
+                    <SelectTrigger id="layer"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {SETTLEMENT_LAYERS.map((l) => (
+                        <SelectItem key={l} value={l}>{l}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
-                  <Label htmlFor="margin">Margin (%)</Label>
+                  <Label htmlFor="offerExpiresAt">Offer expiry (days)</Label>
                   <Input
-                    id="margin"
+                    id="offerExpiresAt"
                     type="number"
-                    step="0.1"
-                    min="0"
-                    max="20"
-                    value={input.capabilities.pricingMargin || ''}
-                    onChange={(e) => handleCapability('pricingMargin', e.target.value)}
+                    min="1"
+                    value={offerExpiryDays}
+                    onChange={(e) => { const d = parseInt(e.target.value || '7', 10); handleField('offerExpiresAt', nowSec + (Number.isNaN(d) ? 7 : Math.max(1, d)) * 86400); }}
                   />
                 </div>
+              </div>
+
+              <div>
+                <Label htmlFor="resolver">Resolver pubkey (optional, enables disputes)</Label>
+                <Input
+                  id="resolver"
+                  className="font-mono text-sm"
+                  placeholder="npub1... or hex pubkey"
+                  value={input.resolverPubkey ?? ''}
+                  onChange={(e) => handleField('resolverPubkey', e.target.value)}
+                />
               </div>
             </CardContent>
           </Card>
@@ -446,7 +498,8 @@ export default function AgentRegistrationPage() {
                 <Globe className="h-5 w-5" /> Relay Preferences
               </CardTitle>
               <CardDescription>
-                Relays where your agent definition is published and reachable.
+                Relay hints included in your share link so customers can
+                discover your events. Relays are managed in app settings.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -490,20 +543,26 @@ export default function AgentRegistrationPage() {
             <div>
               <p className="font-medium text-foreground">How registration works</p>
               <p className="mt-1">
-                Your agent definition is published as a Nostr addressable event
-                (kind 30360), signed by your Nostr identity and stored on
-                decentralized relays. Users discover you via the Pontmore agent
-                directory. PontPay uses an online escrow-backed swap model —
-                swaps are secured by a PIP-01 escrow service. You can update or
-                delete your listing at any time.
+                Your agent definition (kind 30360) declares the <code className="rounded bg-muted px-1">pontmore/swap@1</code> capability.
+                Your escrow descriptor (kind 30361) declares escrow compatibility with an expiry.
+                Your NIP-69 offer (kind 38383) advertises your price and fiat range so P2P clients can discover you.
+                Name and about are published in your Nostr profile (kind 0).
               </p>
             </div>
           </div>
 
+          {/* Validation error */}
+          {validationError && (
+            <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-600">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{validationError}</span>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
             <div className="flex gap-3">
-              <Button type="submit" disabled={isPublishing || !input.name.trim()}>
+              <Button type="submit" disabled={isPublishing || !input.name.trim() || !input.price.trim()}>
                 {isPublishing ? (
                   <><Loader2 className="h-4 w-4 animate-spin" /> Publishing…</>
                 ) : (
@@ -543,6 +602,15 @@ export default function AgentRegistrationPage() {
                   </AlertDialogContent>
                 </AlertDialog>
               )}
+
+              {isRegistered && user && (
+                <ShareLinkButton
+                  agentNpub={nip19.npubEncode(user.pubkey)}
+                  offerDTag={`pontmore/swap@1:${input.currency}:${input.direction === 'buy' ? 'sell' : 'buy'}`}
+                  escrowCoordinate={`${PONTMORE_ESCROW_KIND}:${user.pubkey}:${input.escrowDTag || 'escrow'}`}
+                  relays={input.relays.filter(Boolean)}
+                />
+              )}
             </div>
 
             <Button asChild variant="ghost">
@@ -551,8 +619,36 @@ export default function AgentRegistrationPage() {
               </Link>
             </Button>
           </div>
-        </form>
+         </form>
       </div>
     </AppLayout>
+  );
+}
+
+/** Share link button — copies a shareable agent link to clipboard. */
+function ShareLinkButton({ agentNpub, offerDTag, escrowCoordinate, relays }: {
+  agentNpub: string;
+  offerDTag: string;
+  escrowCoordinate: string;
+  relays: string[];
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const link = buildFullAgentLink({ agentNpub, offerDTag, escrowCoordinate, relays });
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      console.error('Failed to copy link');
+    }
+  };
+
+  return (
+    <Button type="button" variant="outline" onClick={handleCopy}>
+      {copied ? <Check className="h-4 w-4" /> : <Share2 className="h-4 w-4" />}
+      {copied ? 'Link copied!' : 'Share swap link'}
+    </Button>
   );
 }
