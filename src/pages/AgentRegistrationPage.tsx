@@ -603,7 +603,7 @@ export default function AgentRegistrationPage() {
                 </AlertDialog>
               )}
 
-              {isRegistered && user && input.price && (
+              {isRegistered && user && (
                 <ShareLinkButton
                   agentNpub={nip19.npubEncode(user.pubkey)}
                   offerDTag={`pontmore/swap@1:${input.currency}:${input.direction === 'buy' ? 'sell' : 'buy'}`}
