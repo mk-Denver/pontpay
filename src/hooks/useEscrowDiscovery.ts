@@ -13,6 +13,7 @@ import { useMemo } from 'react';
 import {
   PONTMORE_ESCROW_KIND,
   parsePontmoreEscrow,
+  isDescriptorSelectable,
   type PontmoreEscrow,
 } from '@/lib/pontmore';
 
@@ -42,15 +43,22 @@ export function useEscrowDiscovery(relays?: string[]) {
     refetchOnMount: false,
   });
 
-  /** Escrows that have a service schema block (standalone-sufficient — usable by autonomous apps). */
+  /** Escrows that have a service schema block and are still selectable. */
   const standaloneEscrows = useMemo(
-    () => (escrows ?? []).filter((e) => !!e.service?.schema?.url),
+    () => (escrows ?? []).filter((e) => !!e.service?.schema?.url && isDescriptorSelectable(e)),
+    [escrows],
+  );
+
+  /** Escrows that are still selectable (not expired). */
+  const activeEscrows = useMemo(
+    () => (escrows ?? []).filter((e) => isDescriptorSelectable(e)),
     [escrows],
   );
 
   return {
     escrows: escrows ?? [],
     standaloneEscrows,
+    activeEscrows,
     ...query,
   };
 }

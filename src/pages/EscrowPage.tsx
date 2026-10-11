@@ -12,9 +12,7 @@ import {
   ArrowRight,
   RefreshCw,
   FileJson,
-  Hash,
-  Users,
-  Scale,
+  Clock,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Button } from '@/components/ui/button';
@@ -179,26 +177,16 @@ export default function EscrowPage() {
 
                         <p className="text-xs text-muted-foreground font-mono">{escrow.event.pubkey.slice(0, 20)}…</p>
 
-                        {/* PIP-01: funding rules (m of n) */}
+                        {/* PIP-01: expiry */}
                         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Users className="h-3.5 w-3.5" />
-                          <span>Funding: <strong className="text-foreground">{escrow.fundingRules.fundingThreshold} of {escrow.fundingRules.participantCount}</strong></span>
-                        </div>
-
-                        {/* PIP-01: dispute rules + reference format */}
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                          {escrow.disputeRules.policy && (
-                            <span className="flex items-center gap-1">
-                              <Scale className="h-3.5 w-3.5" />
-                              <Badge variant="outline" className="text-xs font-mono">{escrow.disputeRules.policy}</Badge>
-                            </span>
-                          )}
-                          {escrow.referenceFormat && (
-                            <span className="flex items-center gap-1">
-                              <Hash className="h-3.5 w-3.5" />
-                              <Badge variant="outline" className="text-xs font-mono">{escrow.referenceFormat}</Badge>
-                            </span>
-                          )}
+                          <Clock className="h-3.5 w-3.5" />
+                          <span>
+                            {escrow.expiresAt > Date.now() / 1000 ? (
+                              <>Expires: <strong className="text-foreground">{new Date(escrow.expiresAt * 1000).toLocaleDateString()}</strong></>
+                            ) : (
+                              <span className="text-red-600 font-medium">Expired</span>
+                            )}
+                          </span>
                         </div>
 
                         {/* Networks */}

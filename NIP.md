@@ -2,18 +2,18 @@
 
 This document describes how PontPay implements the **Pontmore Protocol** —
 a Nostr-native protocol family for agent identity, capability discovery,
-escrow declaration, and swap lifecycle coordination.
+escrow declaration, and coordination lifecycle management.
 
-**Canonical spec:** https://github.com/pontmore/protocol
+**Canonical spec:** https://github.com/mk-Denver/protocol/tree/mk/nip69-offers-swap-v1
 
 ## PIPs Implemented
 
 | PIP | Title | Kind(s) | Status |
 |-----|-------|---------|--------|
-| PIP-00 | Agent Definition | 30360 | Implemented |
-| PIP-01 | Escrow Descriptor | 30361 | Implemented (discovery + schema-based service connection) |
-| PIP-02 | Swap State Machine | 7300, 7301, 7302, 7303, 7304, 30362 | Implemented |
-| PIP-03 | Dispute Policy | 7303 | Implemented (dispute events) |
+| PIP-00 | Agent Definition | 30360 | Implemented (v2 content schema) |
+| PIP-01 | Escrow Descriptor | 30361 | Implemented (v2 content with `expires_at`) |
+| PIP-02 | Coordination Event Chains | 7300, 7301 | Implemented (content version 2) |
+| pontmore/swap@1 | Bilateral Fiat/Bitcoin Swap Profile | 38383 (offers) | Implemented (experimental) |
 
 ## PIP-00: Agent Definition (kind 30360)
 
@@ -21,18 +21,30 @@ Agents publish a kind 30360 addressable event to register on the network.
 
 - `d` tag: stable identifier (usually `agent`)
 - `t` tag: `agent` for relay-level discovery
-- `a` tag: references the agent's escrow descriptor (`30361:<pubkey>:<d-tag>`) — **required**
-- `relay` tags: relay preferences (required)
-- `f` tags: supported fiat currencies (recommended)
-- Content: JSON with `version`, `name`, `about`, `capabilities`, `pricing_policy`, `escrow`, `updated_at`
+- `t` tag: `pontmore-capability:pontmore/swap@1` (one per declared capability)
+- `a` tag: references the agent's escrow descriptor (`30361:<pubkey>:<d-tag>` with `escrow` marker)
+- Content: JSON with `version` and `capabilities` (array of versioned capability identifiers)
+
+```json
+{
+  "version": 1,
+  "capabilities": ["pontmore/swap@1"]
+}
+```
+
+Name and about belong in the standard Nostr profile event (kind 0), not in
+the PIP-00 content. Relay declarations belong in the standard relay-list event.
+Prices, margins, limits, and currencies belong in NIP-69 offers (kind 38383).
 
 ### Registration Flow
 
-1. Agent fills out registration form (name, capabilities, currencies, regions, limits)
+1. Agent fills out registration form (name, about, escrow config, offer config)
 2. Client publishes a companion escrow descriptor (kind 30361) first
 3. Client publishes the agent definition (kind 30360) with `a` tag referencing the escrow
-4. Updating: re-publish with same `d` tag (addressable replacement)
-5. Deletion: NIP-09 kind 5 event with `a` tag referencing the coordinate
+4. Client publishes a NIP-69 offer (kind 38383) with price, currency, and payment channels
+5. Client updates the kind 0 profile event with name/about
+6. Updating: re-publish with same `d` tag (addressable replacement)
+7. Deletion: NIP-09 kind 5 event with `a` tag referencing the coordinate
 
 ### Discovery
 
@@ -45,9 +57,9 @@ Agent and escrow discovery refresh only when the user presses the Refresh button
 ## PIP-01: Escrow Descriptor (kind 30361)
 
 PontPay discovers escrow services published on Nostr and connects to them
-by resolving their service schema. Escrow is **required** for all swaps.
+by resolving their service schema. Escrow is **required** for all coordinations.
 
-### Descriptor Content (PIP-01)
+### Descriptor Content (PIP-01 v2)
 
 The kind 30361 content field MUST include:
 
@@ -55,37 +67,17 @@ The kind 30361 content field MUST include:
 |-------|------|-------------|
 | `version` | number | Protocol version (1) |
 | `escrow_type` | string | `custodial_escrow`, `lightning_hold_invoice`, or `cashu_escrow` |
-| `networks` | string[] | Lowercase network identifiers (`bitcoin`, `lightning`, `cashu`) |
-| `funding_rules` | object | `{ funding_threshold: number, participant_count: number }` — m of n funding |
-| `dispute_rules` | object | `{ policy: string }` — e.g. `pip03` |
-| `reference_format` | string | `bolt11`, `bolt11_or_custodial_escrow_reference`, etc. |
-| `updated_at` | number | Unix timestamp |
+| `networks` | string[] | Lowercase network identifiers (`lightning`, `bitcoin`, `cashu`) |
+| `expires_at` | number | Unix timestamp after which the descriptor cannot be selected |
+| `service` | object (optional) | `{ schema: { type, url } }` — schema pointer |
 
-### Service Block (Optional)
-
-When present, the `service` block is strictly a schema pointer per PIP-01:
-
-```json
-"service": {
-  "schema": {
-    "type": "openapi",
-    "url": "https://escrow.example.com/pontmore-escrow.openapi.json"
-  }
-}
-```
-
-Supported schema types: `openapi`, `asyncapi`. The endpoint, operations, auth,
-and all service behavior are defined by the referenced schema — not by PIP-01.
+Each value in `content.networks` also appears as a `t` tag: `pontmore-network:<network>`.
 
 ### Escrow Discovery
 
 ```ts
 nostr.query([{ kinds: [30361], limit: 50 }]);
 ```
-
-The `useEscrowDiscovery` hook queries the user's selected relays (managed by
-a shared `RelaySelector` component used by both the Agents and Escrows pages).
-Results refresh only on manual button press.
 
 ### Escrow Connection
 
@@ -101,74 +93,163 @@ The `useEscrowConnection` hook provides the API client. NIP-98 auth events
 are signed client-side via the Nostrify signer and never published — only
 sent as the `Authorization: Nostr <base64>` header.
 
-### Swap Execution with Escrow
+## PIP-02: Coordination Event Chains (content version 2)
 
-**Buy BTC (fiat → BTC):**
-1. Customer connects an escrow service and selects an agent
-2. Customer calls `create` on the escrow → escrow instance created
-3. Customer calls `funding_instructions` → Lightning invoice returned
-4. Customer publishes swap request (kind 7300) with escrow reference
-5. Customer sends invoice + fiat payment details via NIP-17 gift wrap
-6. Agent confirms fiat received and settles the escrow
-7. Bitcoin released to the customer's wallet
-
-**Sell BTC (BTC → fiat):**
-1. Customer connects an escrow service and selects an agent
-2. Customer publishes swap request (kind 7300) with escrow reference
-3. Customer sends payout details via NIP-17 gift wrap
-4. Agent sends fiat to the customer's payout details
-5. Escrow releases BTC to the agent on confirmation
-6. Fiat arrives in the customer's account
-
-## PIP-02: Swap State Machine
-
-Swaps are modeled as Nostr-native state machines with an append-only event log.
+A coordination is a bounded, profile-defined process between identified
+participants. It is represented by one immutable root event (kind 7300)
+followed by append-only, cryptographically linked action events (kind 7301).
 
 ### Event Types
 
 | Kind | Type | Mutability | Purpose |
 |------|------|------------|---------|
-| 7300 | Swap Request | Immutable | Root event defining the requested trade |
-| 7301 | Transition | Immutable | Append-only state advancement |
-| 7302 | Evidence | Immutable | Payment proof, payout proof, etc. |
-| 7303 | Dispute | Immutable | Dispute event (PIP-03) |
-| 7304 | Note | Immutable | Optional human-readable operational note |
-| 30362 | Snapshot | Addressable | Replaceable materialized view for fast lookup |
+| 7300 | Coordination Root | Immutable | Root event proposing the swap terms |
+| 7301 | Coordination Action | Immutable | Append-only, linked by `prev` reference |
 
-### Swap States
+Kinds 7302, 7303, 7304, and 30362 from the earlier draft are NOT used in
+version 2. Evidence is referenced by action `data.evidence`, disputes are
+kernel actions (`core/open_dispute`, `core/resolve_dispute`).
 
-`requested` → `accepted` → `fiat_exchanged` → `lightning_settled` → `completed`
+### Coordination Root (kind 7300)
 
-Both `fiat_exchanged` and `lightning_settled` must occur before `completed`.
-The order depends on the swap type:
+The root event ID is the `coordination_id`. Its signer is the proposing participant.
 
-- **Buy** (fiat → BTC): `requested → accepted → fiat_exchanged → lightning_settled → completed`
-- **Sell** (BTC → fiat): `requested → accepted → lightning_settled → fiat_exchanged → completed`
+**Required tags:**
+- `["p", "<pubkey>", "<relay-hint>", "<role>"]` — one per participant/authority
+  - Roles: `swap/agent`, `swap/customer`, `core/escrow`, `core/resolver`
+- `["e", "<descriptor-event-id>", "<relay-hint>", "escrow-version"]` — exact descriptor revision
+- `["a", "30361:<publisher-pubkey>:<descriptor-d-tag>", "<relay-hint>", "escrow"]` — descriptor coordinate
 
-Branches: `cancelled`, `disputed`, `expired`
-
-### Swap Request Content (kind 7300)
+**Content (version 2):**
 
 ```json
 {
-  "version": 1,
-  "swap_id": "pm_abc123",
-  "swap_type": "buy",
-  "agent": "<agent_pubkey>",
-  "customer": "<customer_pubkey>",
-  "escrow_reference": "<escrow_instance_id>",
-  "fiat": { "currency": "KES", "amount": 7500 },
-  "bitcoin": { "amount_sats": 50000, "network": "lightning" },
-  "expiry": 1719127056
+  "version": 2,
+  "profile": "pontmore/swap@1",
+  "terms": {
+    "direction": "fiat_to_btc",
+    "fiat": { "currency": "KES", "amount": "1000" },
+    "bitcoin": { "amount": "60000", "unit": "sat", "network": "lightning" },
+    "payment_channel": "mpesa-ke-kes@1",
+    "deadlines": { "fiat_pay_by": 1780001800, "fiat_confirm_by": 1780003600 }
+  },
+  "expires_at": 1780000000
 }
 ```
 
-### Companion Private Message Lane
+### Coordination Action (kind 7301)
 
-Per PIP-02, sensitive payloads (invoices, payout details) are exchanged via
-NIP-17 Gift Wrap, NOT in public swap events.
+Each action references the root and its predecessor:
 
-#### Implementation
+- `["e", "<root-id>", "<relay-hint>", "root"]` — root reference
+- `["e", "<prev-id>", "<relay-hint>", "prev"]` — predecessor (root for the first action)
+
+**Content (version 2):**
+
+```json
+{
+  "version": 2,
+  "action": "core/accept"
+}
+```
+
+Actions may include `data` with `payment_reference`, `evidence`, `class`,
+`policy`, or `effect` depending on the action type.
+
+### Kernel Actions (PIP-02 `core/` namespace)
+
+| Action | Authorized signer | Preconditions |
+|--------|-------------------|---------------|
+| `core/accept` | Non-proposing participant | Before `expires_at` |
+| `core/decline` | Non-proposing participant | Before acceptance |
+| `core/secure` | `core/escrow` | Accepted |
+| `core/authorize_settlement` | Fiat receiver | Valid `swap/fiat_confirmed` |
+| `core/settle` | `core/escrow` | Settlement authorized |
+| `core/authorize_refund` | Bitcoin provider | Secured, `fiat_pay_by` elapsed |
+| `core/refund` | `core/escrow` | Refund authorized |
+| `core/cancel` | Either participant | Before `core/secure` |
+| `core/expire` | Either participant | Not accepted before `expires_at` |
+| `core/open_dispute` | Either participant | Accepted, no terminal outcome |
+| `core/resolve_dispute` | `core/resolver` | Disputed |
+
+### Profile Actions (pontmore/swap@1)
+
+| Action | Authorized signer | Preconditions |
+|--------|-------------------|---------------|
+| `swap/fiat_sent` | Fiat sender | Secured, before `fiat_pay_by` |
+| `swap/fiat_confirmed` | Fiat receiver | Valid `swap/fiat_sent`, before `fiat_confirm_by` |
+
+### Direction-Derived Roles
+
+| Direction | Fiat sender | Fiat receiver | Bitcoin provider | Bitcoin recipient |
+|-----------|-------------|---------------|------------------|-------------------|
+| `fiat_to_btc` | `swap/customer` | `swap/agent` | `swap/agent` | `swap/customer` |
+| `btc_to_fiat` | `swap/agent` | `swap/customer` | `swap/customer` | `swap/agent` |
+
+### Normal Settlement History
+
+```
+proposed → core/accept → accepted → core/secure → secured
+  → swap/fiat_sent → fiat_sent → swap/fiat_confirmed → fiat_confirmed
+  → core/authorize_settlement → settlement_authorized → core/settle → settled
+```
+
+### No-Payment Refund History
+
+```
+secured → fiat_pay_by elapses without swap/fiat_sent
+  → core/authorize_refund → refund_authorized → core/refund → refunded
+```
+
+### Chain Reconstruction
+
+State is derived by replaying the validated root and actions. The `prev` link
+establishes chain order — relay arrival order and timestamps do not. The
+`reconstructActionChain` function follows the `prev` links from root to tip.
+Forks (two actions with the same predecessor) freeze the coordination.
+
+## NIP-69 Offers (kind 38383)
+
+Standing swap offers are NIP-69 kind 38383 addressable events signed by the
+`swap/agent` identity. They advertise a price and fiat-amount range for one
+currency and direction.
+
+### Offer Tags
+
+| Tag | Value |
+|-----|-------|
+| `d` | `pontmore/swap@1:<fiat-currency>:<k>` |
+| `k` | `sell` (fiat_to_btc) or `buy` (btc_to_fiat) |
+| `f` | ISO 4217 fiat currency code |
+| `s` | `pending` or `canceled` |
+| `amt` | `0` (Bitcoin amount derived from price) |
+| `fa` | minimum and maximum fiat amount |
+| `pm` | payment method names |
+| `network` | Bitcoin network |
+| `layer` | settlement layer |
+| `expires_at` | offer expiry timestamp |
+| `y` | `pontmore` |
+| `z` | `order` |
+| `protocol` | `pontmore/swap@1` |
+| `price` | exact fiat amount per BTC |
+| `channels` | versioned payment-channel identifiers |
+| `a` | escrow descriptor address with `escrow` marker |
+| `p` | resolver pubkey with `core/resolver` marker (optional) |
+
+Content MUST be empty. Payment instructions MUST NOT appear in the offer.
+
+### Bitcoin Amount Derivation
+
+```
+bitcoin_amount = floor(fiat_amount × 100,000,000 ÷ price)
+```
+
+## Companion Private Message Lane
+
+Sensitive payloads (invoices, payout details) are exchanged via NIP-17 Gift
+Wrap, NOT in public coordination events.
+
+### Implementation
 
 The private lane is implemented in `src/lib/giftwrap.ts` (NIP-59 gift wrap
 create/unwrap) and `src/hooks/useSwapMessages.ts` (send/receive swap payloads).
@@ -190,33 +271,7 @@ create/unwrap) and `src/hooks/useSwapMessages.ts` (send/receive swap payloads).
 - `bank_details` — Fiat payment/payout instructions
 - `payout_confirmation` — Agent confirms fiat payout sent
 - `payment_proof` — Proof of payment
-- `note` — Freeform operational note
-
-## PIP-03: Dispute Policy
-
-Disputes are modeled as kind 7303 events within the swap lifecycle.
-
-### Dispute Classes
-
-- payment not received
-- payment amount mismatch
-- payout not sent
-- escrow funding failure
-- timeout and abandonment
-
-### Resolution Modes
-
-- confirm customer claim
-- confirm agent claim
-- split outcome
-- cancel and refund
-- escalate to manual review
-
-### Evidence Disclosure
-
-Evidence defaults to reference-style publication (hashes, opaque pointers).
-Raw payloads stay in the private message lane unless dispute policy requires
-targeted disclosure.
+- `message` — Freeform operational note
 
 ## Lightning Wallet Integration
 
@@ -229,14 +284,18 @@ PontPay uses Nostr Wallet Connect (NIP-47) via `@getalby/sdk` for:
 
 - Agent definitions (kind 30360) are **public** and signed by the agent's
   Nostr identity. Each agent publishes a companion escrow descriptor (kind 30361)
-  and references it via the `a` tag.
+  and references it via the `a` tag with `escrow` marker.
 - Escrow connections require NIP-98 auth — the user's Nostr identity signs
   each HTTP request. Private keys never leave the browser. The escrow service
   endpoint is resolved from the referenced OpenAPI/AsyncAPI schema at connect
   time, with fetch safety checks per PIP-01.
-- Swap state machine events (kinds 7300-7304) are **public** and immutable
+- Coordination events (kinds 7300/7301) are **public** and immutable. The root
+  binds the exact escrow descriptor revision; republishing or expiring the
+  descriptor does not alter an existing coordination.
 - Sensitive payloads are exchanged via **NIP-17 Gift Wrap** (encrypted)
 - Lightning payments settle with instant finality — Nostr is the messaging
   layer, not the settlement layer
 - Users should verify agent identity via Nostr social proof (NIP-05,
   follower graph) before transacting
+- The `core/escrow` and `core/resolver` authority pubkeys are bound by the
+  coordination root. Actions are validated against these bindings.

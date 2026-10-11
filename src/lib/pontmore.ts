@@ -1,10 +1,13 @@
 /**
  * Pontmore Protocol — core type definitions and helpers.
  *
- * Implements PIP-00 (Agent Definition), PIP-01 (Escrow Descriptor),
- * PIP-02 (Swap State Machine), and PIP-03 (Dispute Policy).
+ * Implements:
+ *   PIP-00  (Agent Definition, kind 30360)
+ *   PIP-01  (Escrow Descriptor, kind 30361)
+ *   PIP-02  (Coordination Event Chains, kinds 7300/7301, content version 2)
+ *   pontmore/swap@1 profile (bilateral fiat/Bitcoin swap, NIP-69 offers kind 38383)
  *
- * Spec: https://github.com/pontmore/protocol
+ * Spec: https://github.com/mk-Denver/protocol/tree/mk/nip69-offers-swap-v1
  */
 
 // ─── PIP-00: Agent Definition ───────────────────────────────────
@@ -20,32 +23,31 @@ export const PONTMORE_AGENT_TAG = 'agent';
 /** Kind 30361 — public escrow declaration (addressable). */
 export const PONTMORE_ESCROW_KIND = 30361;
 
-// ─── PIP-02: Swap State Machine ─────────────────────────────────
+// ─── PIP-02: Coordination Event Chains (version 2) ─────────────
 
-/** Kind 7300 — immutable swap request event. */
-export const PONTMORE_SWAP_REQUEST_KIND = 7300;
+/** Kind 7300 — immutable coordination root event. */
+export const PONTMORE_COORDINATION_ROOT_KIND = 7300;
 
-/** Kind 7301 — immutable swap transition event. */
-export const PONTMORE_SWAP_TRANSITION_KIND = 7301;
+/** Kind 7301 — immutable coordination action event. */
+export const PONTMORE_COORDINATION_ACTION_KIND = 7301;
 
-/** Kind 7302 — immutable swap evidence event. */
-export const PONTMORE_SWAP_EVIDENCE_KIND = 7302;
+/** PIP-02 content version for the generalized kernel. */
+export const PONTMORE_PIP02_VERSION = 2;
 
-/** Kind 7303 — immutable swap dispute event. */
-export const PONTMORE_SWAP_DISPUTE_KIND = 7303;
+// ─── pontmore/swap@1 profile ────────────────────────────────────
 
-/** Kind 7304 — immutable swap note event. */
-export const PONTMORE_SWAP_NOTE_KIND = 7304;
+/** The coordination profile identifier for bilateral fiat/Bitcoin swaps. */
+export const PONTMORE_SWAP_PROFILE = 'pontmore/swap@1';
 
-/** Kind 30362 — replaceable swap snapshot (addressable). */
-export const PONTMORE_SWAP_SNAPSHOT_KIND = 30362;
+/** NIP-69 offer event kind (peer-to-peer order). */
+export const PONTMORE_OFFER_KIND = 38383;
 
-/** Current protocol version for content schemas. */
-export const PONTMORE_VERSION = 1;
+/** Known escrow type identifiers (PIP-01). */
+export const ESCROW_TYPES = ['lightning_hold_invoice', 'custodial_escrow', 'cashu_escrow'] as const;
 
 // ─── PIP-00: Agent Definition Types ─────────────────────────────
 
-/** Structured agent metadata parsed from a kind 30360 event (PIP-00). */
+/** Structured agent definition parsed from a kind 30360 event (PIP-00). */
 export interface PontmoreAgent {
   event: {
     id: string;
@@ -53,36 +55,16 @@ export interface PontmoreAgent {
     kind: number;
     created_at: number;
   };
+  /** d-tag stable identifier (usually "agent"). */
   d: string;
-  /** Agent relays (from `relay` tags). */
-  relays: string[];
-  /** Reference to the default escrow descriptor (kind 30361 coordinate). */
-  escrowRef: string;
-  /** Supported fiat currencies (from `f` tags). */
-  fiatCurrencies: string[];
-  /** Operator or service URLs (from `r` tags). */
-  serviceUrls: string[];
-  // Content fields
-  name: string;
-  about: string;
-  capabilities: AgentCapabilities;
-  pricingPolicy: string;
-  escrowSummary: string;
-  updatedAt: number;
+  /** Versioned capability identifiers from content.capabilities (e.g. ["pontmore/swap@1"]). */
+  capabilities: string[];
+  /** Escrow descriptor address from the `a` tag with "escrow" marker, if present. */
+  escrowRef?: string;
+  /** Relay hint from the escrow `a` tag, if present. */
+  escrowRelayHint?: string;
   /** Whether this is the current user's own listing. */
   isOwn?: boolean;
-}
-
-/** Capability surface from PIP-00 content schema. */
-export interface AgentCapabilities {
-  swapTypes: string[];
-  fiatCurrencies: string[];
-  paymentChannels: string[];
-  settlementNetworks: string[];
-  regions: string[];
-  minAmount: number;
-  maxAmount: number;
-  pricingMargin?: string;
 }
 
 // ─── PIP-01: Escrow Descriptor Types ────────────────────────────
@@ -96,22 +78,16 @@ export interface PontmoreEscrow {
     created_at: number;
   };
   d: string;
-  networks: string[];
-  // Content fields
   version: number;
   escrowType: string;
-  fundingRules: { fundingThreshold: number; participantCount: number };
-  disputeRules: { policy: string };
-  referenceFormat: string;
-  updatedAt: number;
-  // Service block (standalone-sufficient escrows)
+  networks: string[];
+  /** Unix timestamp after which the descriptor cannot be selected for a new coordination. */
+  expiresAt: number;
+  /** Optional service schema pointer (PIP-01). */
   service?: PontmoreEscrowService;
-  implementations?: PontmoreEscrowImplementation[];
 }
 
-/** The service block of a PIP-01 escrow descriptor (standalone-sufficient).
- *  PIP-01 defines service as only a schema pointer — endpoint and operations
- *  belong to the referenced schema (OpenAPI/AsyncAPI). */
+/** The service block of a PIP-01 escrow descriptor (schema pointer only). */
 export interface PontmoreEscrowService {
   schema: {
     type: string;
@@ -119,133 +95,252 @@ export interface PontmoreEscrowService {
   };
 }
 
-/** An implementation entry in a PIP-01 custodial escrow descriptor. */
-export interface PontmoreEscrowImplementation {
-  network: string;
-  invoice_asset: string;
-  invoice_currency: string;
-  invoice_amount_rule: string;
-  payout_network: string;
-}
+// ─── PIP-02: Coordination Types ──────────────────────────────────
 
-// ─── PIP-02: Swap State Machine Types ───────────────────────────
+/** Swap direction (pontmore/swap@1 terms). */
+export type SwapDirection = 'fiat_to_btc' | 'btc_to_fiat';
 
-/** Swap types supported by the Pontmore protocol. */
+/** UI alias: buy = fiat_to_btc, sell = btc_to_fiat. */
 export type SwapType = 'buy' | 'sell';
 
-/**
- * Swap state lifecycle for online agent escrow swaps.
- *
- * Deposit (fiat → BTC):  requested → accepted → fiat_exchanged → lightning_settled → completed
- * Withdrawal (BTC → fiat): requested → accepted → lightning_settled → fiat_exchanged → completed
- *
- * Both fiat_exchanged and lightning_settled must occur before completed.
- * The order depends on the swap type but either can happen first in practice.
- */
-export type SwapState =
-  | 'requested'          // swap request published
-  | 'accepted'           // agent accepted, meeting arranged
-  | 'fiat_exchanged'     // cash changed hands in person
-  | 'lightning_settled'  // Lightning payment confirmed
-  | 'completed'          // swap fully completed
-  | 'cancelled'          // swap cancelled
-  | 'disputed'           // dispute raised
-  | 'expired';           // swap expired
+/** Map a UI swap type to the protocol direction. */
+export function swapTypeToDirection(type: SwapType): SwapDirection {
+  return type === 'buy' ? 'fiat_to_btc' : 'btc_to_fiat';
+}
 
-/** Immutable swap request content (kind 7300, PIP-02). */
-export interface SwapRequestContent {
-  version: number;
-  swap_id: string;
-  swap_type: SwapType;
-  agent: string;        // agent pubkey
-  customer: string;     // customer pubkey
-  escrow_reference: string;
+/** Map a protocol direction to the UI swap type. */
+export function directionToSwapType(direction: SwapDirection): SwapType {
+  return direction === 'fiat_to_btc' ? 'buy' : 'sell';
+}
+
+/** Derived coordination state from replaying the action chain. */
+export type CoordinationState =
+  | 'proposed'
+  | 'accepted'
+  | 'secured'
+  | 'fiat_sent'
+  | 'fiat_confirmed'
+  | 'settlement_authorized'
+  | 'settled'
+  | 'refund_authorized'
+  | 'refunded'
+  | 'declined'
+  | 'cancelled'
+  | 'expired'
+  | 'disputed';
+
+/** Terminal states — no further action is permitted. */
+export const TERMINAL_STATES: CoordinationState[] = [
+  'settled', 'refunded', 'declined', 'cancelled', 'expired',
+];
+
+/** Kernel action identifiers (PIP-02 `core/` namespace). */
+export type KernelAction =
+  | 'core/accept'
+  | 'core/decline'
+  | 'core/secure'
+  | 'core/authorize_settlement'
+  | 'core/settle'
+  | 'core/authorize_refund'
+  | 'core/refund'
+  | 'core/cancel'
+  | 'core/expire'
+  | 'core/open_dispute'
+  | 'core/resolve_dispute';
+
+/** Profile action identifiers (pontmore/swap@1). */
+export type SwapAction = 'swap/fiat_sent' | 'swap/fiat_confirmed';
+
+/** All valid action identifiers. */
+export type CoordinationActionId = KernelAction | SwapAction;
+
+/** Dispute classes (pontmore/swap@1). */
+export type DisputeClass =
+  | 'fiat_not_received'
+  | 'incorrect_fiat_amount'
+  | 'payment_reference_invalid'
+  | 'escrow_not_secured'
+  | 'bitcoin_not_released'
+  | 'conflicting_confirmation'
+  | 'timeout';
+
+/** Resolution effects (PIP-02 core/resolve_dispute). */
+export type ResolutionEffect = 'resume' | 'authorize_settlement' | 'authorize_refund' | 'cancel';
+
+/** Evidence reference object (PIP-02 kernel). */
+export interface EvidenceRef {
+  type: 'event' | 'commitment' | 'opaque';
+  value: string;
+}
+
+/** A PIP-02 commitment object. */
+export interface Commitment {
+  algorithm: string;
+  digest: string;
+}
+
+/** Swap terms (pontmore/swap@1 profile). */
+export interface SwapTerms {
+  direction: SwapDirection;
   fiat: {
     currency: string;
-    amount: number;
-    method?: string;
+    amount: string;
   };
   bitcoin: {
-    amount_sats: number;
+    amount: string;
+    unit: string;
     network: string;
   };
-  expiry: number;
+  payment_channel: string;
+  deadlines: {
+    fiat_pay_by: number;
+    fiat_confirm_by: number;
+  };
 }
 
-/** Immutable swap transition content (kind 7301, PIP-02). */
-export interface SwapTransitionContent {
-  swap_id: string;
-  state: SwapState;
-  prev_state: SwapState;
-  actor_role: 'agent' | 'customer' | 'system';
-  reason: string;
+/** Coordination root content (kind 7300, PIP-02 version 2). */
+export interface CoordinationRootContent {
+  version: 2;
+  profile: string;
+  terms: SwapTerms;
+  expires_at: number;
+  commitments?: Record<string, Commitment>;
+}
+
+/** Coordination action content (kind 7301, PIP-02 version 2). */
+export interface CoordinationActionContent {
+  version: 2;
+  action: string;
+  data?: {
+    payment_reference?: string;
+    evidence?: EvidenceRef[];
+    class?: string;
+    policy?: string;
+    effect?: ResolutionEffect;
+  };
+}
+
+/** A participant bound by the coordination root. */
+export interface CoordinationParticipant {
+  pubkey: string;
+  role: string;
+  relayHint?: string;
+}
+
+/** A parsed coordination action in the chain. */
+export interface CoordinationAction {
+  eventId: string;
+  pubkey: string;
   created_at: number;
+  action: string;
+  data?: CoordinationActionContent['data'];
+  /** The predecessor event id (root for the first action, otherwise the preceding action). */
+  prevEventId: string;
 }
 
-/** Immutable swap evidence content (kind 7302, PIP-02). */
-export interface SwapEvidenceContent {
-  swap_id: string;
-  evidence_type: string;
-  reference: string;
-  description?: string;
-  created_at: number;
-}
-
-/** Replaceable swap snapshot content (kind 30362, PIP-02). */
-export interface SwapSnapshotContent {
-  swap_id: string;
-  current_state: SwapState;
-  agent: string;
-  customer: string;
-  swap_type: SwapType;
-  bitcoin_amount_sats: number;
-  fiat_amount: number;
-  fiat_currency: string;
-  escrow_reference: string;
-  updated_at: number;
-}
-
-/** A materialized swap with its full event history. */
-export interface PontmoreSwap {
-  swapId: string;
+/** A materialized coordination with its full action history. */
+export interface PontmoreCoordination {
+  /** Root event id — the coordination identifier. */
+  coordinationId: string;
+  rootEvent: {
+    id: string;
+    pubkey: string;
+    created_at: number;
+  };
+  profile: string;
+  terms: SwapTerms;
+  expiresAt: number;
+  commitments?: Record<string, Commitment>;
+  participants: CoordinationParticipant[];
+  /** Exact descriptor event id from the `e` tag with "escrow-version" marker. */
+  escrowDescriptorId: string;
+  /** Descriptor coordinate from the `a` tag with "escrow" marker. */
+  escrowDescriptorCoordinate: string;
+  actions: CoordinationAction[];
+  state: CoordinationState;
+  /** Whether the coordination is in a disputed overlay state. */
+  disputed: boolean;
+  direction: 'outgoing' | 'incoming';
+  /** UI convenience: swap type derived from direction. */
   swapType: SwapType;
-  state: SwapState;
+}
+
+/** A local coordination record for quick lookup (supplements relay queries). */
+export interface LocalCoordinationRecord {
+  coordinationId: string;
+  swapType: SwapType;
   agentPubkey: string;
   customerPubkey: string;
-  bitcoinAmountSats: number;
-  fiatAmount: number;
+  bitcoinAmount: string;
+  fiatAmount: string;
   fiatCurrency: string;
-  escrowReference: string;
-  expiry: number;
+  paymentChannel: string;
+  state: CoordinationState;
   createdAt: number;
   updatedAt: number;
-  requestEvent?: { id: string; pubkey: string; created_at: number };
-  transitions: { state: SwapState; prevState: SwapState; actorRole: string; reason: string; createdAt: number; eventId: string }[];
-  evidence: { type: string; reference: string; description?: string; createdAt: number; eventId: string }[];
   direction: 'outgoing' | 'incoming';
+  rootEventId?: string;
+}
+
+// ─── NIP-69 Offer Types ─────────────────────────────────────────
+
+/** A parsed NIP-69 swap offer (kind 38383, pontmore/swap@1). */
+export interface SwapOffer {
+  event: {
+    id: string;
+    pubkey: string;
+    kind: number;
+    created_at: number;
+  };
+  d: string;
+  /** NIP-69: sell (fiat_to_btc) or buy (btc_to_fiat). */
+  k: 'sell' | 'buy';
+  /** ISO 4217 fiat currency. */
+  f: string;
+  /** Status: pending or canceled. */
+  s: 'pending' | 'canceled';
+  /** NIP-69 amt — always "0" for Pontmore (Bitcoin amount derived from price). */
+  amt: string;
+  /** Fiat amount range [min, max]. */
+  faMin: string;
+  faMax: string;
+  /** Payment method names. */
+  pm: string[];
+  /** Optional premium percentage. */
+  premium?: string;
+  /** Bitcoin network (mainnet, testnet, etc.). */
+  network?: string;
+  /** Settlement layer, matching terms.bitcoin.network. */
+  layer?: string;
+  /** Unix timestamp after which the offer is no longer selectable. */
+  expiresAt?: number;
+  /** Relay deletion timestamp (NIP-40). */
+  expiration?: number;
+  // Pontmore profile tags
+  /** "pontmore/swap@1". */
+  protocol: string;
+  /** Exact fiat amount per BTC (decimal string). */
+  price: string;
+  /** Versioned payment-channel identifiers. */
+  channels: string[];
+  /** Escrow descriptor address. */
+  escrowAddress: string;
+  /** Resolver pubkey (optional). */
+  resolverPubkey?: string;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
 
-/** Generate a unique swap id. */
-export function generateSwapId(): string {
-  const random = Math.random().toString(36).slice(2, 10);
-  const time = Date.now().toString(36);
-  return `pm_${time}${random}`;
-}
-
 /** Format satoshis into a human-readable string. */
-export function formatSats(sats: number): string {
-  if (sats >= 100_000_000) {
-    return `${(sats / 100_000_000).toFixed(4)} BTC`;
-  }
-  if (sats >= 1000) {
-    return `${sats.toLocaleString()} sats`;
-  }
-  return `${sats} sats`;
+export function formatSats(sats: number | string): string {
+  const n = typeof sats === 'string' ? parseInt(sats, 10) : sats;
+  if (Number.isNaN(n)) return '0 sats';
+  if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(4)} BTC`;
+  if (n >= 1000) return `${n.toLocaleString()} sats`;
+  return `${n} sats`;
 }
 
-/** Approximate fiat conversion (display only — agents set the real rate). */
+/** Approximate fiat conversion (display only — agents set the real rate via offers). */
 export function estimateFiat(sats: number, btcPriceUsd: number, currency: string): number {
   const usd = (sats / 100_000_000) * btcPriceUsd;
   const rates: Record<string, number> = {
@@ -254,6 +349,28 @@ export function estimateFiat(sats: number, btcPriceUsd: number, currency: string
   };
   const rate = rates[currency] ?? 1;
   return Math.round(usd * rate);
+}
+
+/** Compute the Bitcoin amount (sats) from fiat amount and price (fiat per BTC). */
+export function deriveBitcoinAmount(fiatAmount: string, price: string): string {
+  const fiat = parseFloat(fiatAmount);
+  const p = parseFloat(price);
+  if (!fiat || !p || p <= 0) return '0';
+  return Math.floor((fiat * 100_000_000) / p).toString();
+}
+
+/** Compute a sha256-bytes@1 commitment digest from arbitrary bytes. */
+export async function sha256Commitment(bytes: Uint8Array): Promise<Commitment> {
+  const hash = await crypto.subtle.digest('SHA-256', bytes as BufferSource);
+  const hex = Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return { algorithm: 'sha256-bytes@1', digest: `sha256:${hex}` };
+}
+
+/** Check whether an escrow descriptor is selectable (current and not expired). */
+export function isDescriptorSelectable(escrow: PontmoreEscrow, now: number = Date.now() / 1000): boolean {
+  return escrow.expiresAt > now;
 }
 
 // ─── PIP-00: Agent Parsing ──────────────────────────────────────
@@ -280,44 +397,35 @@ export function parsePontmoreAgent(event: {
   const getTag = (name: string): string | undefined =>
     event.tags.find(([n]) => n === name)?.[1];
 
-  const getAllTag = (name: string): string[] =>
-    event.tags.filter(([n]) => n === name).map(([, v]) => v);
-
-  // Parse content JSON
-  let name = 'Unknown Agent';
-  let about = '';
-  let capabilities: AgentCapabilities = {
-    swapTypes: [], fiatCurrencies: [], paymentChannels: [],
-    settlementNetworks: [], regions: [], minAmount: 0, maxAmount: 0,
-  };
-  let pricingPolicy = '';
-  let escrowSummary = '';
-  let updatedAt = 0;
-
+  // Parse content JSON: { version, capabilities: [...] }
+  let capabilities: string[] = [];
   try {
     const c = JSON.parse(event.content);
-    if (c && typeof c === 'object') {
-      name = typeof c.name === 'string' ? c.name : name;
-      about = typeof c.about === 'string' ? c.about : about;
-      pricingPolicy = typeof c.pricing_policy === 'string' ? c.pricing_policy : '';
-      escrowSummary = typeof c.escrow === 'string' ? c.escrow : '';
-      updatedAt = typeof c.updated_at === 'number' ? c.updated_at : 0;
-      if (c.capabilities && typeof c.capabilities === 'object') {
-        const cap = c.capabilities;
-        capabilities = {
-          swapTypes: Array.isArray(cap.swap_types) ? cap.swap_types : [],
-          fiatCurrencies: Array.isArray(cap.fiat_currencies) ? cap.fiat_currencies : [],
-          paymentChannels: Array.isArray(cap.payment_channels) ? cap.payment_channels : [],
-          settlementNetworks: Array.isArray(cap.settlement_networks) ? cap.settlement_networks : [],
-          regions: Array.isArray(cap.regions) ? cap.regions : [],
-          minAmount: typeof cap.min_amount === 'number' ? cap.min_amount : 0,
-          maxAmount: typeof cap.max_amount === 'number' ? cap.max_amount : 0,
-          pricingMargin: typeof cap.pricing_margin === 'string' ? cap.pricing_margin : undefined,
-        };
-      }
+    if (c && typeof c === 'object' && Array.isArray(c.capabilities)) {
+      capabilities = c.capabilities.filter((v: unknown): v is string => typeof v === 'string');
     }
   } catch {
     // content may not be valid JSON
+  }
+
+  // Extract escrow descriptor reference from `a` tag with "escrow" marker
+  let escrowRef: string | undefined;
+  let escrowRelayHint: string | undefined;
+  for (const tag of event.tags) {
+    if (tag[0] === 'a' && tag[3] === 'escrow') {
+      escrowRef = tag[1];
+      escrowRelayHint = tag[2] || undefined;
+      break;
+    }
+  }
+
+  // Fallback: an `a` tag starting with "30361:" without explicit marker
+  if (!escrowRef) {
+    const aTag = event.tags.find(([n, v]) => n === 'a' && v?.startsWith(`${PONTMORE_ESCROW_KIND}:`));
+    if (aTag) {
+      escrowRef = aTag[1];
+      escrowRelayHint = aTag[2] || undefined;
+    }
   }
 
   return {
@@ -328,16 +436,9 @@ export function parsePontmoreAgent(event: {
       created_at: event.created_at,
     },
     d: getTag('d') ?? 'agent',
-    relays: getAllTag('relay'),
-    escrowRef: getTag('a') ?? '',
-    fiatCurrencies: getAllTag('f'),
-    serviceUrls: getAllTag('r'),
-    name,
-    about,
     capabilities,
-    pricingPolicy,
-    escrowSummary,
-    updatedAt,
+    escrowRef,
+    escrowRelayHint,
   };
 }
 
@@ -357,36 +458,27 @@ export function parsePontmoreEscrow(event: {
   const getTag = (name: string): string | undefined =>
     event.tags.find(([n]) => n === name)?.[1];
 
-  const getAllTag = (name: string): string[] =>
-    event.tags.filter(([n]) => n === name).map(([, v]) => v);
-
   let version = 1;
   let escrowType = '';
   let networks: string[] = [];
-  let fundingRules: { fundingThreshold: number; participantCount: number } = { fundingThreshold: 1, participantCount: 1 };
-  let disputeRules: { policy: string } = { policy: '' };
-  let referenceFormat = '';
-  let updatedAt = 0;
+  let expiresAt = 0;
+  let service: PontmoreEscrowService | undefined;
 
   try {
     const c = JSON.parse(event.content);
     if (c && typeof c === 'object') {
       version = typeof c.version === 'number' ? c.version : 1;
       escrowType = typeof c.escrow_type === 'string' ? c.escrow_type : '';
-      networks = Array.isArray(c.networks) ? c.networks : [];
-      referenceFormat = typeof c.reference_format === 'string' ? c.reference_format : '';
-      updatedAt = typeof c.updated_at === 'number' ? c.updated_at : 0;
+      networks = Array.isArray(c.networks) ? c.networks.filter((v: unknown): v is string => typeof v === 'string') : [];
+      expiresAt = typeof c.expires_at === 'number' ? c.expires_at : 0;
 
-      if (c.funding_rules && typeof c.funding_rules === 'object') {
-        fundingRules = {
-          fundingThreshold: typeof c.funding_rules.funding_threshold === 'number' ? c.funding_rules.funding_threshold : 1,
-          participantCount: typeof c.funding_rules.participant_count === 'number' ? c.funding_rules.participant_count : 1,
-        };
-      }
-
-      if (c.dispute_rules && typeof c.dispute_rules === 'object') {
-        disputeRules = {
-          policy: typeof c.dispute_rules.policy === 'string' ? c.dispute_rules.policy : '',
+      if (c.service && typeof c.service === 'object' && c.service.schema) {
+        const s = c.service.schema;
+        service = {
+          schema: {
+            type: typeof s.type === 'string' ? s.type : '',
+            url: typeof s.url === 'string' ? s.url : '',
+          },
         };
       }
     }
@@ -394,36 +486,11 @@ export function parsePontmoreEscrow(event: {
     // content may not be valid JSON
   }
 
-  // Extract service block if present (PIP-01: service contains only schema pointer)
-  let service: PontmoreEscrowService | undefined;
-  let implementations: PontmoreEscrowImplementation[] | undefined;
-  try {
-    const c = JSON.parse(event.content);
-    if (c.service && typeof c.service === 'object' && c.service.schema) {
-      const s = c.service.schema;
-      service = {
-        schema: {
-          type: typeof s.type === 'string' ? s.type : '',
-          url: typeof s.url === 'string' ? s.url : '',
-        },
-      };
-    }
-    if (Array.isArray(c.implementations)) {
-      implementations = c.implementations.map((impl: Record<string, unknown>) => ({
-        network: typeof impl.network === 'string' ? impl.network : '',
-        invoice_asset: typeof impl.invoice_asset === 'string' ? impl.invoice_asset : '',
-        invoice_currency: typeof impl.invoice_currency === 'string' ? impl.invoice_currency : '',
-        invoice_amount_rule: typeof impl.invoice_amount_rule === 'string' ? impl.invoice_amount_rule : '',
-        payout_network: typeof impl.payout_network === 'string' ? impl.payout_network : '',
-      }));
-    }
-  } catch {
-    // content may not be valid JSON
-  }
-
-  // Fallback to tags for networks
+  // Fallback: extract networks from pontmore-network: tags
   if (networks.length === 0) {
-    networks = getAllTag('network');
+    networks = event.tags
+      .filter(([n, v]) => n === 't' && v?.startsWith('pontmore-network:'))
+      .map(([, v]) => v.replace('pontmore-network:', ''));
   }
 
   return {
@@ -434,138 +501,432 @@ export function parsePontmoreEscrow(event: {
       created_at: event.created_at,
     },
     d: getTag('d') ?? 'default',
-    networks,
     version,
     escrowType,
-    fundingRules,
-    disputeRules,
-    referenceFormat,
-    updatedAt,
+    networks,
+    expiresAt,
     service,
-    implementations,
   };
 }
 
-// ─── PIP-02: Swap Parsing ───────────────────────────────────────
+// ─── PIP-02: Coordination Parsing ──────────────────────────────
 
-/** Parse a kind 7300 swap request event into structured content (PIP-02). */
-export function parseSwapRequest(event: {
+/** Parse a kind 7300 coordination root event into structured content (PIP-02 v2). */
+export function parseCoordinationRoot(event: {
+  id: string;
+  pubkey: string;
   content: string;
+  created_at: number;
   tags: string[][];
-}): SwapRequestContent | null {
+}): CoordinationRootContent | null {
   try {
     const c = JSON.parse(event.content);
     if (!c || typeof c !== 'object') return null;
-    if (typeof c.swap_id !== 'string' || typeof c.swap_type !== 'string') return null;
-    return c as SwapRequestContent;
+    if (c.version !== PONTMORE_PIP02_VERSION) return null;
+    if (typeof c.profile !== 'string' || typeof c.terms !== 'object' || typeof c.expires_at !== 'number') return null;
+    return c as CoordinationRootContent;
   } catch {
     return null;
   }
 }
 
-/** Parse a kind 7301 transition event into structured content (PIP-02). */
-export function parseSwapTransition(event: {
+/** Parse a kind 7301 coordination action event into structured content (PIP-02 v2). */
+export function parseCoordinationAction(event: {
   content: string;
-  tags: string[][];
-}): SwapTransitionContent | null {
+}): CoordinationActionContent | null {
   try {
     const c = JSON.parse(event.content);
     if (!c || typeof c !== 'object') return null;
-    if (typeof c.swap_id !== 'string' || typeof c.state !== 'string') return null;
-    return c as SwapTransitionContent;
+    if (c.version !== PONTMORE_PIP02_VERSION) return null;
+    if (typeof c.action !== 'string') return null;
+    return c as CoordinationActionContent;
   } catch {
     return null;
   }
 }
 
-/** Parse a kind 7302 evidence event into structured content (PIP-02). */
-export function parseSwapEvidence(event: {
-  content: string;
-}): SwapEvidenceContent | null {
-  try {
-    const c = JSON.parse(event.content);
-    if (!c || typeof c !== 'object') return null;
-    if (typeof c.swap_id !== 'string') return null;
-    return c as SwapEvidenceContent;
-  } catch {
-    return null;
-  }
+/** Extract participants from a root event's `p` tags. */
+export function extractParticipants(tags: string[][]): CoordinationParticipant[] {
+  return tags
+    .filter(([n]) => n === 'p')
+    .map(([, pubkey, relayHint, role]) => ({
+      pubkey,
+      role: role ?? '',
+      relayHint: relayHint || undefined,
+    }));
 }
 
-/** Parse a kind 30362 snapshot event into structured content (PIP-02). */
-export function parseSwapSnapshot(event: {
-  content: string;
-}): SwapSnapshotContent | null {
-  try {
-    const c = JSON.parse(event.content);
-    if (!c || typeof c !== 'object') return null;
-    if (typeof c.swap_id !== 'string') return null;
-    return c as SwapSnapshotContent;
-  } catch {
-    return null;
+/** Extract the escrow descriptor references from a root event's tags. */
+export function extractEscrowRefs(tags: string[][]): {
+  descriptorId: string;
+  descriptorCoordinate: string;
+} {
+  let descriptorId = '';
+  let descriptorCoordinate = '';
+
+  for (const tag of tags) {
+    if (tag[0] === 'e' && tag[3] === 'escrow-version') {
+      descriptorId = tag[1];
+    }
+    if (tag[0] === 'a' && tag[3] === 'escrow') {
+      descriptorCoordinate = tag[1];
+    }
   }
+
+  return { descriptorId, descriptorCoordinate };
 }
 
-/** Build swap state machine events from raw Nostr events. */
-export function buildSwapFromEvents(
-  requestEvent: { id: string; pubkey: string; content: string; created_at: number; tags?: string[][] },
-  transitionEvents: { id: string; content: string; created_at: number; tags?: string[][] }[],
-  evidenceEvents: { id: string; content: string; created_at: number; tags?: string[][] }[],
+/** Extract the root and predecessor references from an action event's tags. */
+export function extractActionRefs(tags: string[][]): {
+  rootId: string;
+  prevId: string;
+} {
+  let rootId = '';
+  let prevId = '';
+
+  for (const tag of tags) {
+    if (tag[0] === 'e' && tag[3] === 'root') {
+      rootId = tag[1];
+    }
+    if (tag[0] === 'e' && tag[3] === 'prev') {
+      prevId = tag[1];
+    }
+  }
+
+  return { rootId, prevId };
+}
+
+// ─── Coordination State Machine ─────────────────────────────────
+
+/**
+ * Derive the coordination state by replaying the validated action chain.
+ *
+ * Implements the pontmore/swap@1 profile state reconstruction on top of the
+ * PIP-02 kernel. The chain is linear (linked by `prev`), so we walk it in order
+ * and derive each state transition.
+ */
+export function deriveCoordinationState(
+  actions: CoordinationAction[],
+  rootCreatedAt: number,
+  rootExpiresAt: number,
+): { state: CoordinationState; disputed: boolean } {
+  let state: CoordinationState = 'proposed';
+  let disputed = false;
+
+  for (const action of actions) {
+    switch (action.action) {
+      case 'core/accept':
+        state = 'accepted';
+        break;
+      case 'core/decline':
+        state = 'declined';
+        break;
+      case 'core/secure':
+        state = 'secured';
+        break;
+      case 'swap/fiat_sent':
+        state = 'fiat_sent';
+        break;
+      case 'swap/fiat_confirmed':
+        state = 'fiat_confirmed';
+        break;
+      case 'core/authorize_settlement':
+        state = 'settlement_authorized';
+        break;
+      case 'core/settle':
+        state = 'settled';
+        break;
+      case 'core/authorize_refund':
+        state = 'refund_authorized';
+        break;
+      case 'core/refund':
+        state = 'refunded';
+        break;
+      case 'core/cancel':
+        state = 'cancelled';
+        break;
+      case 'core/expire':
+        state = 'expired';
+        break;
+      case 'core/open_dispute':
+        disputed = true;
+        break;
+      case 'core/resolve_dispute':
+        if (action.data?.effect === 'resume') {
+          disputed = false;
+        } else if (action.data?.effect === 'authorize_settlement') {
+          disputed = false;
+          state = 'settlement_authorized';
+        } else if (action.data?.effect === 'authorize_refund') {
+          disputed = false;
+          state = 'refund_authorized';
+        } else if (action.data?.effect === 'cancel') {
+          disputed = false;
+          state = 'cancelled';
+        }
+        break;
+    }
+
+    // Stop processing once terminal (except for dispute resolution)
+    if (TERMINAL_STATES.includes(state) && action.action !== 'core/resolve_dispute') {
+      break;
+    }
+  }
+
+  // Auto-expire if the root was never accepted past its expires_at
+  if (state === 'proposed' && rootExpiresAt > 0 && Date.now() / 1000 > rootExpiresAt) {
+    state = 'expired';
+  }
+
+  return { state, disputed };
+}
+
+/**
+ * Reconstruct a linear action chain from a set of action events.
+ *
+ * Actions are linked by `prev` — the first action's predecessor is the root.
+ * We build the chain by following the links from root → tip. If a fork is
+ * detected (two actions with the same predecessor), both branches are retained
+ * but the coordination is considered frozen.
+ */
+export function reconstructActionChain(
+  rootEventId: string,
+  actionEvents: { id: string; pubkey: string; content: string; created_at: number; tags: string[][] }[],
+): { chain: CoordinationAction[]; forked: boolean } {
+  // Parse and index actions by their prev reference
+  const byPrev = new Map<string, CoordinationAction[]>();
+
+  for (const evt of actionEvents) {
+    const parsed = parseCoordinationAction(evt);
+    if (!parsed) continue;
+
+    const { rootId, prevId } = extractActionRefs(evt.tags);
+    if (rootId !== rootEventId) continue;
+    if (!prevId) continue;
+
+    const action: CoordinationAction = {
+      eventId: evt.id,
+      pubkey: evt.pubkey,
+      created_at: evt.created_at,
+      action: parsed.action,
+      data: parsed.data,
+      prevEventId: prevId,
+    };
+
+    const arr = byPrev.get(prevId) ?? [];
+    arr.push(action);
+    byPrev.set(prevId, arr);
+  }
+
+  // Walk the chain from root
+  const chain: CoordinationAction[] = [];
+  let forked = false;
+  let currentPrev = rootEventId;
+
+  for (;;) {
+    const candidates = byPrev.get(currentPrev);
+    if (!candidates || candidates.length === 0) break;
+
+    if (candidates.length > 1) {
+      forked = true;
+      // Keep the earliest by created_at as the canonical branch
+      candidates.sort((a, b) => a.created_at - b.created_at);
+    }
+
+    const next = candidates[0];
+    chain.push(next);
+    currentPrev = next.eventId;
+  }
+
+  return { chain, forked };
+}
+
+/**
+ * Build a materialized coordination from a root event and its action events.
+ */
+export function buildCoordinationFromEvents(
+  rootEvent: { id: string; pubkey: string; content: string; created_at: number; tags: string[][] },
+  actionEvents: { id: string; pubkey: string; content: string; created_at: number; tags: string[][] }[],
   myPubkey: string,
-): PontmoreSwap | null {
-  const request = parseSwapRequest({ content: requestEvent.content, tags: requestEvent.tags ?? [] });
-  if (!request) return null;
+): PontmoreCoordination | null {
+  const root = parseCoordinationRoot(rootEvent);
+  if (!root) return null;
 
-  const transitions = transitionEvents
-    .map((e) => {
-      const t = parseSwapTransition({ content: e.content, tags: e.tags ?? [] });
-      return t ? {
-        state: t.state,
-        prevState: t.prev_state,
-        actorRole: t.actor_role,
-        reason: t.reason,
-        createdAt: t.created_at,
-        eventId: e.id,
-      } : null;
-    })
-    .filter((t): t is NonNullable<typeof t> => t !== null)
-    .sort((a, b) => a.createdAt - b.createdAt);
+  const participants = extractParticipants(rootEvent.tags);
+  const { descriptorId, descriptorCoordinate } = extractEscrowRefs(rootEvent.tags);
+  const { chain, forked } = reconstructActionChain(rootEvent.id, actionEvents);
 
-  const evidence = evidenceEvents
-    .map((e) => {
-      const ev = parseSwapEvidence(e);
-      return ev ? {
-        type: ev.evidence_type,
-        reference: ev.reference,
-        description: ev.description,
-        createdAt: ev.created_at,
-        eventId: e.id,
-      } : null;
-    })
-    .filter((e): e is NonNullable<typeof e> => e !== null);
+  // If forked, the coordination is frozen — derive state from the canonical branch
+  const { state, disputed } = deriveCoordinationState(chain, rootEvent.created_at, root.expires_at);
 
-  const currentState = transitions.length > 0
-    ? transitions[transitions.length - 1].state
-    : 'requested';
-
-  const direction = request.customer === myPubkey ? 'outgoing' : 'incoming';
+  // Determine direction: if myPubkey is the proposer, it's outgoing (we proposed)
+  const proposer = rootEvent.pubkey;
+  const direction = proposer === myPubkey ? 'outgoing' : 'incoming';
+  const swapType = directionToSwapType(root.terms.direction);
 
   return {
-    swapId: request.swap_id,
-    swapType: request.swap_type,
-    state: currentState,
-    agentPubkey: request.agent,
-    customerPubkey: request.customer,
-    bitcoinAmountSats: request.bitcoin.amount_sats,
-    fiatAmount: request.fiat.amount,
-    fiatCurrency: request.fiat.currency,
-    escrowReference: request.escrow_reference,
-    expiry: request.expiry,
-    createdAt: requestEvent.created_at,
-    updatedAt: transitions.length > 0 ? transitions[transitions.length - 1].createdAt : requestEvent.created_at,
-    requestEvent: { id: requestEvent.id, pubkey: requestEvent.pubkey, created_at: requestEvent.created_at },
-    transitions,
-    evidence,
+    coordinationId: rootEvent.id,
+    rootEvent: {
+      id: rootEvent.id,
+      pubkey: rootEvent.pubkey,
+      created_at: rootEvent.created_at,
+    },
+    profile: root.profile,
+    terms: root.terms,
+    expiresAt: root.expires_at,
+    commitments: root.commitments,
+    participants,
+    escrowDescriptorId: descriptorId,
+    escrowDescriptorCoordinate: descriptorCoordinate,
+    actions: chain,
+    state: forked ? 'disputed' : state,
+    disputed: forked || disputed,
     direction,
+    swapType,
   };
+}
+
+// ─── NIP-69 Offer Parsing ───────────────────────────────────────
+
+/** Parse a kind 38383 NIP-69 offer event into a SwapOffer (pontmore/swap@1). */
+export function parseSwapOffer(event: {
+  id: string;
+  pubkey: string;
+  kind: number;
+  content: string;
+  created_at: number;
+  tags: string[][];
+}): SwapOffer | null {
+  if (event.kind !== PONTMORE_OFFER_KIND) return null;
+
+  const getTag = (name: string): string | undefined =>
+    event.tags.find(([n]) => n === name)?.[1];
+
+  const getAllTag = (name: string): string[] =>
+    event.tags.filter(([n]) => n === name).map(([, v]) => v);
+
+  const k = getTag('k');
+  if (k !== 'sell' && k !== 'buy') return null;
+
+  const fa = getAllTag('fa');
+  const channels = getAllTag('channels');
+
+  // Extract escrow `a` tag
+  let escrowAddress = '';
+  for (const tag of event.tags) {
+    if (tag[0] === 'a' && tag[1]?.startsWith(`${PONTMORE_ESCROW_KIND}:`)) {
+      escrowAddress = tag[1];
+      break;
+    }
+  }
+
+  // Extract resolver `p` tag
+  let resolverPubkey: string | undefined;
+  for (const tag of event.tags) {
+    if (tag[0] === 'p' && tag[3] === 'core/resolver') {
+      resolverPubkey = tag[1];
+      break;
+    }
+  }
+
+  const expiresAtStr = getTag('expires_at');
+  const expirationStr = getTag('expiration');
+
+  return {
+    event: {
+      id: event.id,
+      pubkey: event.pubkey,
+      kind: event.kind,
+      created_at: event.created_at,
+    },
+    d: getTag('d') ?? '',
+    k,
+    f: getTag('f') ?? '',
+    s: (getTag('s') as 'pending' | 'canceled') ?? 'pending',
+    amt: getTag('amt') ?? '0',
+    faMin: fa[0] ?? '0',
+    faMax: fa[1] ?? fa[0] ?? '0',
+    pm: getAllTag('pm'),
+    premium: getTag('premium'),
+    network: getTag('network'),
+    layer: getTag('layer'),
+    expiresAt: expiresAtStr ? parseInt(expiresAtStr, 10) : undefined,
+    expiration: expirationStr ? parseInt(expirationStr, 10) : undefined,
+    protocol: getTag('protocol') ?? '',
+    price: getTag('price') ?? '0',
+    channels,
+    escrowAddress,
+    resolverPubkey,
+  };
+}
+
+// ─── Coordination Authorization Helpers ──────────────────────────
+
+/** Get the pubkey bound to a role in a coordination. */
+export function getParticipantByRole(
+  participants: CoordinationParticipant[],
+  role: string,
+): string | undefined {
+  return participants.find((p) => p.role === role)?.pubkey;
+}
+
+/** Check if a signer is authorized for a given kernel action (pontmore/swap@1). */
+export function isAuthorizedSigner(
+  action: string,
+  signerPubkey: string,
+  coordination: PontmoreCoordination,
+): boolean {
+  const { participants, terms } = coordination;
+  const agent = getParticipantByRole(participants, 'swap/agent');
+  const customer = getParticipantByRole(participants, 'swap/customer');
+  const escrow = getParticipantByRole(participants, 'core/escrow');
+  const resolver = getParticipantByRole(participants, 'core/resolver');
+  const proposer = coordination.rootEvent.pubkey;
+
+  // The non-proposing application participant is the accepter
+  const accepter = proposer === agent ? customer : agent;
+
+  // Direction-derived roles
+  const isFiatToBtc = terms.direction === 'fiat_to_btc';
+  const fiatSender = isFiatToBtc ? customer : agent;
+  const fiatReceiver = isFiatToBtc ? agent : customer;
+  const bitcoinProvider = isFiatToBtc ? agent : customer;
+
+  switch (action) {
+    case 'core/accept':
+    case 'core/decline':
+      return signerPubkey === accepter;
+
+    case 'core/cancel':
+      return signerPubkey === agent || signerPubkey === customer;
+
+    case 'core/expire':
+      return signerPubkey === agent || signerPubkey === customer;
+
+    case 'core/secure':
+    case 'core/settle':
+    case 'core/refund':
+      return signerPubkey === escrow;
+
+    case 'core/authorize_settlement':
+      return signerPubkey === fiatReceiver;
+
+    case 'core/authorize_refund':
+      return signerPubkey === bitcoinProvider;
+
+    case 'core/open_dispute':
+      return signerPubkey === agent || signerPubkey === customer;
+
+    case 'core/resolve_dispute':
+      return signerPubkey === resolver;
+
+    case 'swap/fiat_sent':
+      return signerPubkey === fiatSender;
+
+    case 'swap/fiat_confirmed':
+      return signerPubkey === fiatReceiver;
+
+    default:
+      return false;
+  }
 }
