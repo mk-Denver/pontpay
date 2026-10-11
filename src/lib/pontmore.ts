@@ -354,10 +354,14 @@ export function estimateFiat(sats: number, btcPriceUsd: number, currency: string
 }
 
 /** Compute the Bitcoin amount (sats) from fiat amount and price (fiat per BTC).
- *  Uses integer arithmetic to avoid floating-point precision issues. */
+ *  Uses integer-only arithmetic to avoid floating-point precision issues. */
 export function deriveBitcoinAmount(fiatAmount: string, price: string): string {
-  const fiatCents = Math.round(parseFloat(fiatAmount) * 100);
-  const priceCents = Math.round(parseFloat(price) * 100);
+  const toCents = (s: string): number => {
+    const [whole, frac = ''] = s.split('.');
+    return parseInt(whole, 10) * 100 + parseInt(frac.padEnd(2, '0').slice(0, 2), 10);
+  };
+  const fiatCents = toCents(fiatAmount);
+  const priceCents = toCents(price);
   if (!fiatCents || !priceCents || priceCents <= 0) return '0';
   // sats = floor(fiat * 100_000_000 / price) = floor(fiatCents * 10_000_000 / priceCents)
   return Math.floor((fiatCents * 10_000_000) / priceCents).toString();
@@ -724,8 +728,12 @@ export function reconstructActionChain(
   const chain: CoordinationAction[] = [];
   let forked = false;
   let currentPrev = rootEventId;
+  const visited = new Set<string>();
 
   for (;;) {
+    if (visited.has(currentPrev)) break; // cycle guard
+    visited.add(currentPrev);
+
     const candidates = byPrev.get(currentPrev);
     if (!candidates || candidates.length === 0) break;
 

@@ -51,7 +51,7 @@ export function useIncomingSwaps() {
       if (incomingRoots.length === 0) return [];
 
       // Step 2: fetch all actions for these roots in one batch
-      const rootIds = incomingRoots.map((e) => e.id);
+      const rootIds = [...new Set(incomingRoots.map((e) => e.id))];
       const actionEvents = await nostr.query(
         [{ kinds: [PONTMORE_COORDINATION_ACTION_KIND], '#e': rootIds, limit: Math.max(1000, rootIds.length * 50) }],
         { signal: c.signal },

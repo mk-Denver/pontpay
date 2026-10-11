@@ -55,6 +55,9 @@ export function parseAgentLink(search: URLSearchParams): AgentLinkParams | null 
 
   if (!agentNpub || !offerDTag || !escrowCoordinate) return null;
 
+  // Validate escrow coordinate format (kind:pubkey:dtag)
+  if (!/^\d+:[a-f0-9]{64}:.+$/.test(escrowCoordinate)) return null;
+
   // Validate the npub
   try {
     const decoded = nip19.decode(agentNpub);

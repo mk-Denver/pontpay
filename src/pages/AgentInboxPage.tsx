@@ -101,6 +101,12 @@ const STATE_FLOW: CoordinationState[] = [
   'settlement_authorized', 'settled',
 ];
 
+const SEND_PLACEHOLDERS: Partial<Record<SwapPayloadType, string>> = {
+  message: 'Enter message to send encrypted to the customer...',
+  bank_details: 'e.g. M-Pesa send to +254712345678',
+  payout_confirmation: 'Confirm fiat payout sent...',
+};
+
 interface AgentAction {
   label: string;
   action: CoordinationActionId;
@@ -508,7 +514,7 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
       <Separator />
 
       {/* Private message lane */}
-      <PrivateLane coord={coord} customerPubkey={customerPubkey} hasNip44={hasNip44} />
+      <PrivateLane coord={coord} customerPubkey={customerPubkey} hasNip44={hasNip44} myPubkey={myPubkey} />
     </div>
   );
 }
@@ -524,7 +530,7 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
 
 // ─── Private Lane (NIP-17 messages) ──────────────────────────────
 
-function PrivateLane({ coord, customerPubkey, hasNip44 }: { coord: PontmoreCoordination; customerPubkey: string; hasNip44: boolean }) {
+function PrivateLane({ coord, customerPubkey, hasNip44, myPubkey }: { coord: PontmoreCoordination; customerPubkey: string; hasNip44: boolean; myPubkey: string }) {
   const { useSwapInbox, sendMessage } = useSwapMessages();
   const { data: messages, isLoading } = useSwapInbox(coord.coordinationId);
   const [sendType, setSendType] = useState<SwapPayloadType>('message');
@@ -589,7 +595,7 @@ function PrivateLane({ coord, customerPubkey, hasNip44 }: { coord: PontmoreCoord
           </p>
         ) : (
           messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} isOwn={msg.senderPubkey !== customerPubkey} />
+            <MessageBubble key={msg.id} message={msg} isOwn={msg.senderPubkey === myPubkey} />
           ))
         )}
       </div>
@@ -609,11 +615,7 @@ function PrivateLane({ coord, customerPubkey, hasNip44 }: { coord: PontmoreCoord
           ))}
         </div>
         <Textarea
-          placeholder={
-            sendType === 'bank_details' ? 'e.g. M-Pesa send to +254712345678'
-            : sendType === 'payout_confirmation' ? 'Confirm fiat payout sent...'
-            : 'Enter message to send encrypted to the customer...'
-          }
+          placeholder={SEND_PLACEHOLDERS[sendType] ?? 'Enter message to send encrypted to the customer...'}
           value={sendData}
           onChange={(e) => setSendData(e.target.value)}
           rows={2}

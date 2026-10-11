@@ -51,16 +51,21 @@ export function useAgents(filters?: UseAgentsFilters, relays?: string[]) {
         .filter((a): a is PontmoreAgent => a !== null)
         .sort((a, b) => b.event.created_at - a.event.created_at);
 
-      // Step 2: fetch offers only for known agent pubkeys
-      const agentPubkeys = parsedAgents.map((a) => a.event.pubkey);
-      const offerEvents = agentPubkeys.length > 0
-        ? await target.query(
-            [{ kinds: [PONTMORE_OFFER_KIND], authors: agentPubkeys, limit: 200 }],
-            { signal: c.signal },
-          )
-        : [];
+      // Step 2: fetch offers only for known agent pubkeys (batched to respect relay limits)
+      const agentPubkeys = [...new Set(parsedAgents.map((a) => a.event.pubkey))];
+      const BATCH_SIZE = 50;
+      const offerEvents: typeof agentEvents = [];
+      for (let i = 0; i < agentPubkeys.length; i += BATCH_SIZE) {
+        const batch = agentPubkeys.slice(i, i + BATCH_SIZE);
+        if (batch.length === 0) continue;
+        const events = await target.query(
+          [{ kinds: [PONTMORE_OFFER_KIND], authors: batch, limit: 200 }],
+          { signal: c.signal },
+        );
+        offerEvents.push(...events);
+      }
 
-      // Parse and group offers by pubkey — filter out malformed/expired
+      // Parse and group offers by pubkey — filter out malformed only (expired filtered below)
       const nowSec = Math.floor(Date.now() / 1000);
       const offersByPubkey = new Map<string, SwapOffer[]>();
       for (const evt of offerEvents) {

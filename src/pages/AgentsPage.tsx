@@ -275,10 +275,11 @@ function AgentCard({ agent, isOwn }: { agent: AgentWithOffers; isOwn: boolean })
           <Avatar className="h-12 w-12 border">
             {picture ? (
               <img src={picture} alt={name} className="h-full w-full rounded-full object-cover" />
-            ) : null}
-            <AvatarFallback className="bg-orange-500/10 text-orange-600 font-semibold">
-              {name.slice(0, 2).toUpperCase()}
-            </AvatarFallback>
+            ) : (
+              <AvatarFallback className="bg-orange-500/10 text-orange-600 font-semibold">
+                {name.slice(0, 2).toUpperCase()}
+              </AvatarFallback>
+            )}
           </Avatar>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">

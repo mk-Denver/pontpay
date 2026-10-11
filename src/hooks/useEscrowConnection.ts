@@ -314,20 +314,33 @@ export function useEscrowConnection() {
       const authEvent = await signNip98(method, url, bodyStr);
       if (!authEvent) throw new Error('Failed to sign NIP-98 auth event');
 
-      const authHeader = 'Nostr ' + btoa(JSON.stringify(authEvent));
+      const authHeader = 'Nostr ' + btoa(unescape(encodeURIComponent(JSON.stringify(authEvent))));
 
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Authorization': authHeader,
-          'Content-Type': 'application/json',
-        },
-        body: bodyStr ?? '{}',
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30_000);
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Escrow API error ${res.status}`);
-      return data as T;
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json',
+          },
+          body: bodyStr ?? '{}',
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          let errorMsg: string;
+          try { errorMsg = JSON.parse(text).error || `Escrow API error ${res.status}`; }
+          catch { errorMsg = `Escrow API error ${res.status}: ${text.slice(0, 200)}`; }
+          throw new Error(errorMsg);
+        }
+        return await res.json() as T;
+      } finally {
+        clearTimeout(timer);
+      }
     },
     [connection, user, signNip98],
   );
@@ -342,15 +355,29 @@ export function useEscrowConnection() {
       const authEvent = await signNip98('GET', url);
       if (!authEvent) throw new Error('Failed to sign NIP-98 auth event');
 
-      const authHeader = 'Nostr ' + btoa(JSON.stringify(authEvent));
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: { 'Authorization': authHeader },
-      });
+      const authHeader = 'Nostr ' + btoa(unescape(encodeURIComponent(JSON.stringify(authEvent))));
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Escrow API error ${res.status}`);
-      return data as T;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30_000);
+
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: { 'Authorization': authHeader },
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          let errorMsg: string;
+          try { errorMsg = JSON.parse(text).error || `Escrow API error ${res.status}`; }
+          catch { errorMsg = `Escrow API error ${res.status}: ${text.slice(0, 200)}`; }
+          throw new Error(errorMsg);
+        }
+        return await res.json() as T;
+      } finally {
+        clearTimeout(timer);
+      }
     },
     [connection, user, signNip98],
   );
@@ -359,11 +386,13 @@ export function useEscrowConnection() {
 
   /** Create a new two-party escrow instance. Returns enrollment tokens. */
   const createEscrow = useCallback(
-    (params: CreateEscrowRequest) => escrowFetch<CreateEscrowResponse>('create', params as unknown as Record<string, unknown>),
+    (params: CreateEscrowRequest) => escrowFetch<CreateEscrowResponse>('create', { ...params }),
     [escrowFetch],
   );
 
-  /** Join an existing escrow using an enrollment token. */
+  /** Join an existing escrow using an enrollment token.
+   *  The `create` endpoint handles both new escrow creation and joining
+   *  via enrollment token, per the pontmore_escrow_http_v1 contract. */
   const joinEscrow = useCallback(
     (enrollmentToken: string) =>
       escrowFetch<JoinResponse>('create', { enrollment_token: enrollmentToken }),
@@ -423,7 +452,7 @@ export function useEscrowConnection() {
 
   /** Get the current derived coordination state from the escrow service. */
   const getCoordinationState = useCallback(
-    (coordinationId: string) => escrowGet<CoordinationStateResponse>(`coordination/${coordinationId}`),
+    (coordinationId: string) => escrowGet<CoordinationStateResponse>(`coordination/${encodeURIComponent(coordinationId)}`),
     [escrowGet],
   );
 

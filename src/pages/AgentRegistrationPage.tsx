@@ -51,6 +51,7 @@ import {
 } from '@/hooks/useAgentRegistration';
 import { useAuthor } from '@/hooks/useAuthor';
 import type { SwapType } from '@/lib/pontmore';
+import { PONTMORE_ESCROW_KIND } from '@/lib/pontmore';
 import { buildFullAgentLink } from '@/lib/agentLink';
 
 const ALL_CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
@@ -276,7 +277,7 @@ export default function AgentRegistrationPage() {
                     type="number"
                     min="1"
                     value={escrowExpiryDays}
-                    onChange={(e) => handleField('escrowExpiresAt', nowSec + parseInt(e.target.value || '30', 10) * 86400)}
+                    onChange={(e) => { const d = parseInt(e.target.value || '30', 10); handleField('escrowExpiresAt', nowSec + (Number.isNaN(d) ? 30 : Math.max(1, d)) * 86400); }}
                   />
                 </div>
               </div>
@@ -472,7 +473,7 @@ export default function AgentRegistrationPage() {
                     type="number"
                     min="1"
                     value={offerExpiryDays}
-                    onChange={(e) => handleField('offerExpiresAt', nowSec + parseInt(e.target.value || '7', 10) * 86400)}
+                    onChange={(e) => { const d = parseInt(e.target.value || '7', 10); handleField('offerExpiresAt', nowSec + (Number.isNaN(d) ? 7 : Math.max(1, d)) * 86400); }}
                   />
                 </div>
               </div>
@@ -497,7 +498,8 @@ export default function AgentRegistrationPage() {
                 <Globe className="h-5 w-5" /> Relay Preferences
               </CardTitle>
               <CardDescription>
-                Relays where your agent definition is published and reachable.
+                Relay hints included in your share link so customers can
+                discover your events. Relays are managed in app settings.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -604,8 +606,8 @@ export default function AgentRegistrationPage() {
               {isRegistered && user && input.price && (
                 <ShareLinkButton
                   agentNpub={nip19.npubEncode(user.pubkey)}
-                  offerDTag={`pontmore/swap@1:${input.currency}:${input.direction === 'sell' ? 'sell' : 'buy'}`}
-                  escrowCoordinate={`${30361}:${user.pubkey}:${input.escrowDTag || 'escrow'}`}
+                  offerDTag={`pontmore/swap@1:${input.currency}:${input.direction === 'buy' ? 'sell' : 'buy'}`}
+                  escrowCoordinate={`${PONTMORE_ESCROW_KIND}:${user.pubkey}:${input.escrowDTag || 'escrow'}`}
                   relays={input.relays.filter(Boolean)}
                 />
               )}

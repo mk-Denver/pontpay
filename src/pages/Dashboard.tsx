@@ -46,6 +46,9 @@ import {
 
 const CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
 
+/** Fresh unix timestamp in seconds — safe to call in event handlers. */
+function unixNow(): number { return Math.floor(Date.now() / 1000); }
+
 const STATE_LABELS: Record<CoordinationState, string> = {
   proposed: 'Proposed',
   accepted: 'Accepted',
@@ -258,7 +261,6 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
   const [memo, setMemo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [nowSec] = useState(() => Math.floor(Date.now() / 1000));
 
   const isBuy = swapType === 'buy';
 
@@ -296,7 +298,7 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
         return;
       }
       const escrowPubkey = parts[1];
-      const escrowDTag = parts[2];
+      const escrowDTag = parts.slice(2).join(':');
 
       // Query the exact descriptor event
       const [descriptorEvent] = await nostr.query(
@@ -316,7 +318,7 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
       }
 
       // Check expiry
-      if (descriptor.expiresAt <= nowSec) {
+      if (descriptor.expiresAt <= unixNow()) {
         setStatusMsg('The escrow descriptor has expired. The agent needs to republish.');
         return;
       }

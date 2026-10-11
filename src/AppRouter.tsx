@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ScrollToTop } from "./components/ScrollToTop";
 
 import Index from "./pages/Index";
@@ -20,6 +20,7 @@ export function AppRouter() {
         <Route path="/" element={<Index />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/swap" element={<SwapLandingPage />} />
+        <Route path="/wallet" element={<Navigate to="/swap" replace />} />
         <Route path="/agents" element={<AgentsPage />} />
         <Route path="/register-agent" element={<AgentRegistrationPage />} />
         <Route path="/escrows" element={<EscrowPage />} />

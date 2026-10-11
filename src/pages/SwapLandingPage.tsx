@@ -17,7 +17,7 @@
 
 import { useSeoMeta } from '@unhead/react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Zap,
   Store,
@@ -69,8 +69,6 @@ import {
 } from '@/lib/agentLink';
 import { generateSecretKey, nip19 } from 'nostr-tools';
 
-const CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
-
 type Step = 'loading' | 'no-identity' | 'creating-identity' | 'offer' | 'form' | 'creating-escrow' | 'funding' | 'waiting-escrow' | 'publishing' | 'done' | 'error';
 
 export default function SwapLandingPage() {
@@ -87,12 +85,14 @@ export default function SwapLandingPage() {
   const [step, setStep] = useState<Step>('loading');
   const [agentPubkey, setAgentPubkey] = useState<string | null>(null);
   const [offer, setOffer] = useState<SwapOffer | null>(null);
+  const [escrowDescriptorEventId, setEscrowDescriptorEventId] = useState<string>('');
   // Escrow state
   const [escrowId, setEscrowId] = useState<string | null>(null);
   const [fundingInvoice, setFundingInvoice] = useState<string | null>(null);
   const [escrowState, setEscrowState] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [copiedInvoice, setCopiedInvoice] = useState(false);
+  const hasPublishedRef = useRef(false);
 
   // Form state
   const [fiatAmount, setFiatAmount] = useState('');
@@ -192,8 +192,8 @@ export default function SwapLandingPage() {
 
           if (escrowEvents.length > 0) {
             const escrow = parsePontmoreEscrow(escrowEvents[0]);
+            setEscrowDescriptorEventId(escrowEvents[0].id);
             if (escrow?.service?.schema?.url) {
-              // Auto-connect to the escrow if not already connected
               if (!isEscrowConnected) {
                 await connectEscrow(escrow);
               }
@@ -221,25 +221,36 @@ export default function SwapLandingPage() {
 
     let cancelled = false;
 
+    const MAX_POLL_ATTEMPTS = 120; // ~10 minutes at 5s intervals
+    let attempts = 0;
+
     const poll = async () => {
+      attempts++;
       try {
         const status = await getFundStatus(escrowId);
         if (cancelled) return;
         setEscrowState(status.state);
 
-        if (status.state === 'active' || status.state === 'release_pending') {
+        if (status.state === 'active') {
           setStep('publishing');
         } else if (status.state === 'canceled' || status.state === 'refunded') {
           setStep('error');
           setStatusMsg(`Escrow ${status.state}. The swap was cancelled.`);
+        } else if (attempts >= MAX_POLL_ATTEMPTS) {
+          setStep('error');
+          setStatusMsg('Escrow confirmation timed out. Please check your payment and try again.');
         } else {
-          // Keep polling
           setTimeout(poll, 5000);
         }
       } catch (err) {
         if (!cancelled) {
           console.error('Fund status poll failed:', err);
-          setTimeout(poll, 10000);
+          if (attempts >= MAX_POLL_ATTEMPTS) {
+            setStep('error');
+            setStatusMsg('Escrow status check failed repeatedly. Please try again.');
+          } else {
+            setTimeout(poll, 10000);
+          }
         }
       }
     };
@@ -251,6 +262,8 @@ export default function SwapLandingPage() {
   // Step 4: Publish coordination root + send fiat details via NIP-59
   useEffect(() => {
     if (step !== 'publishing' || !escrowId || !agentPubkey || !offer || !linkParams || !user) return;
+    if (hasPublishedRef.current) return;
+    hasPublishedRef.current = true;
 
     let cancelled = false;
 
@@ -273,7 +286,7 @@ export default function SwapLandingPage() {
           agentPubkey,
           customerPubkey: myPubkey,
           escrowPubkey,
-          escrowDescriptorId: '',
+          escrowDescriptorId: escrowDescriptorEventId,
           escrowDescriptorCoordinate: currentLink.escrowCoordinate,
           resolverPubkey: currentOffer.resolverPubkey || undefined,
           fiatCurrency: currency,
@@ -310,24 +323,33 @@ export default function SwapLandingPage() {
 
     publishAndReveal();
     return () => { cancelled = true; };
-  }, [step, escrowId, agentPubkey, offer, linkParams, user, fiatAmount, currency, paymentChannel, fiatDetails, hasNip44, publishCoordinationRoot, sendMessage]);
+  }, [step, escrowId, agentPubkey, offer, linkParams, user, fiatAmount, currency, paymentChannel, fiatDetails, hasNip44, publishCoordinationRoot, sendMessage, escrowDescriptorEventId]);
 
   // Handle form submit — create escrow
   const handleSubmit = async () => {
     if (!fiatAmount || !offer || !isEscrowConnected) return;
+
+    const amt = parseFloat(fiatAmount);
+    if (amt < parseFloat(offer.faMin) || amt > parseFloat(offer.faMax)) {
+      toast({ title: 'Amount out of range', description: `Enter between ${offer.faMin} and ${offer.faMax} ${offer.f}`, variant: 'destructive' });
+      return;
+    }
+
+    const bitcoinAmount = deriveBitcoinAmount(fiatAmount, offer.price);
+    const sats = parseInt(bitcoinAmount, 10);
+    if (!sats || sats <= 0) {
+      toast({ title: 'Invalid amount', description: 'The Bitcoin amount is too small for this fiat amount.', variant: 'destructive' });
+      return;
+    }
+
     setStep('creating-escrow');
     setStatusMsg('Creating escrow instance…');
 
     try {
-      const bitcoinAmount = deriveBitcoinAmount(fiatAmount, offer.price);
       const swapType: SwapType = offer.k === 'sell' ? 'buy' : 'sell';
 
-      // The BTC provider funds the escrow. For buy (fiat_to_btc), the agent provides BTC.
-      // For sell (btc_to_fiat), the customer provides BTC.
-      // In both cases, the escrow holds the BTC amount.
-
       const result = await createEscrow({
-        amount_sats: parseInt(bitcoinAmount, 10),
+        amount_sats: sats,
         description: `Pontmore ${swapType} ${bitcoinAmount} sats — ${fiatAmount} ${currency}`,
         refund_ln_address: refundAddress || undefined,
         funding_model: '1_of_2',
@@ -490,10 +512,7 @@ export default function SwapLandingPage() {
                   </div>
                   <div>
                     <Label htmlFor="currency">Currency</Label>
-                    <Select value={currency} onValueChange={setCurrency}>
-                      <SelectTrigger id="currency"><SelectValue /></SelectTrigger>
-                      <SelectContent>{CURRENCIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                    </Select>
+                    <Input id="currency" value={currency} readOnly className="font-mono" />
                   </div>
                 </div>
 

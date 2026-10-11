@@ -38,8 +38,14 @@ import {
 
 const HOUR = 3600;
 
-/** Map a kernel/profile action to its resulting coordination state. */
-function deriveStateFromAction(action: CoordinationActionId): CoordinationState {
+/**
+ * Map a kernel/profile action to the resulting coordination state.
+ * For disputes, core/open_dispute does NOT change the state (it overlays a
+ * disputed flag), and core/resolve_dispute depends on action.data.effect.
+ * This is a simplified mapping for the local ledger — canonical state is
+ * always derived from the full action chain via deriveCoordinationState.
+ */
+function deriveStateFromAction(action: CoordinationActionId, prevState: CoordinationState, data?: CoordinationActionContent['data']): CoordinationState {
   switch (action) {
     case 'core/accept': return 'accepted';
     case 'core/decline': return 'declined';
@@ -52,9 +58,13 @@ function deriveStateFromAction(action: CoordinationActionId): CoordinationState 
     case 'core/refund': return 'refunded';
     case 'core/cancel': return 'cancelled';
     case 'core/expire': return 'expired';
-    case 'core/open_dispute': return 'disputed';
-    case 'core/resolve_dispute': return 'settled';
-    default: return 'proposed';
+    case 'core/open_dispute': return prevState; // disputed overlay, state unchanged
+    case 'core/resolve_dispute':
+      if (data?.effect === 'authorize_settlement') return 'settlement_authorized';
+      if (data?.effect === 'authorize_refund') return 'refund_authorized';
+      if (data?.effect === 'cancel') return 'cancelled';
+      return prevState; // resume
+    default: return prevState;
   }
 }
 
@@ -256,7 +266,7 @@ export function useSwapStateMachine() {
       setLocalCoord((prev) =>
         prev.map((s) =>
           s.coordinationId === params.coordinationId
-            ? { ...s, state: deriveStateFromAction(params.action), updatedAt: event.created_at }
+            ? { ...s, state: deriveStateFromAction(params.action, s.state, params.data), updatedAt: event.created_at }
             : s,
         ),
       );

@@ -33,6 +33,9 @@ export interface EscrowDescriptorInput {
 
 /** Build the JSON content for a kind 30361 event per PIP-01. */
 function buildEscrowContent(input: EscrowDescriptorInput): string {
+  if (input.expiresAt <= Math.floor(Date.now() / 1000)) {
+    throw new Error('expiresAt must be a future timestamp');
+  }
   const content: Record<string, unknown> = {
     version: 1,
     escrow_type: input.escrowType,

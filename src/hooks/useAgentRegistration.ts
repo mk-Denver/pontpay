@@ -19,6 +19,7 @@
 
 import { useNostr } from '@nostrify/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { nip19 } from 'nostr-tools';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useAppContext } from '@/hooks/useAppContext';
@@ -188,12 +189,13 @@ function buildOfferTags(input: AgentRegistrationInput, pubkey: string): string[]
     ['price', input.price],
     ['network', input.network],
     ['layer', input.layer],
+    // expires_at: when the offer stops being selectable for new coordinations
     ['expires_at', input.offerExpiresAt.toString()],
+    // expiration (NIP-40): when relays should delete the event (buffer for in-flight discovery)
     ['expiration', (input.offerExpiresAt + 7 * DAY).toString()],
   ];
 
   for (const ch of input.paymentChannels) {
-    tags.push(['channels', ch]);
     tags.push(['pm', ch]);
   }
 
@@ -205,9 +207,21 @@ function buildOfferTags(input: AgentRegistrationInput, pubkey: string): string[]
     'escrow',
   ]);
 
-  // Resolver pubkey (optional)
+  // Resolver pubkey (optional) — decode npub to hex if needed
   if (input.resolverPubkey) {
-    tags.push(['p', input.resolverPubkey, '', 'core/resolver']);
+    let resolverHex = input.resolverPubkey;
+    if (input.resolverPubkey.startsWith('npub1')) {
+      try {
+        const decoded = nip19.decode(input.resolverPubkey);
+        if (decoded.type === 'npub') resolverHex = decoded.data as string;
+      } catch {
+        // invalid npub — skip resolver
+        resolverHex = '';
+      }
+    }
+    if (resolverHex) {
+      tags.push(['p', resolverHex, '', 'core/resolver']);
+    }
   }
 
   return tags;
@@ -281,18 +295,18 @@ export function useAgentRegistration() {
         console.warn('Profile update failed (non-fatal):', err);
       }
 
-      // 2. Publish companion escrow descriptor (PIP-01, kind 30361) first
-      await publishEvent({
-        kind: PONTMORE_ESCROW_KIND,
-        content: buildEscrowContent(input),
-        tags: buildEscrowTags(input),
-      });
-
-      // 3. Publish the agent definition (PIP-00, kind 30360)
+      // 2. Publish the agent definition first (PIP-00, kind 30360)
       const agentEvent = await publishEvent({
         kind: PONTMORE_AGENT_KIND,
         content: buildAgentContent(),
         tags: buildAgentTags(input, myPubkey),
+      });
+
+      // 3. Publish companion escrow descriptor (PIP-01, kind 30361)
+      await publishEvent({
+        kind: PONTMORE_ESCROW_KIND,
+        content: buildEscrowContent(input),
+        tags: buildEscrowTags(input),
       });
 
       // 4. Publish NIP-69 offer (kind 38383) if price is set
@@ -303,8 +317,13 @@ export function useAgentRegistration() {
             content: buildOfferContent(),
             tags: buildOfferTags(input, myPubkey),
           });
-        } catch {
-          // offer is optional — failure is non-fatal
+        } catch (err) {
+          console.error('Offer publish failed:', err);
+          toast({
+            title: 'Offer publish failed',
+            description: 'Agent and escrow published, but the swap offer could not be published. Try editing and re-saving.',
+            variant: 'destructive',
+          });
         }
       }
 
@@ -327,18 +346,20 @@ export function useAgentRegistration() {
     },
   });
 
-  /** Delete the agent definition via NIP-09. */
+  /** Delete the agent definition + escrow descriptor + offer via NIP-09. */
   const deleteRegistration = useMutation({
     mutationFn: async (identifier: string) => {
       if (!myPubkey) throw new Error('Not logged in');
       const d = identifier || 'agent';
-      const coordinate = `${PONTMORE_AGENT_KIND}:${myPubkey}:${d}`;
+      const agentCoordinate = `${PONTMORE_AGENT_KIND}:${myPubkey}:${d}`;
+      const escrowCoordinate = `${PONTMORE_ESCROW_KIND}:${myPubkey}:escrow`;
 
       const event = await publishEvent({
         kind: 5,
         content: 'Agent listing deleted',
         tags: [
-          ['a', coordinate],
+          ['a', agentCoordinate],
+          ['a', escrowCoordinate],
           ['t', PONTMORE_AGENT_TAG],
         ],
       });
