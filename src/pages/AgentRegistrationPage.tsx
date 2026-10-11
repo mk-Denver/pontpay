@@ -1,5 +1,5 @@
 import { useSeoMeta } from '@unhead/react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Store,
@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   Coins,
   Tag,
-  Calendar,
+  AlertCircle,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Button } from '@/components/ui/button';
@@ -22,7 +22,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import {
   AlertDialog,
@@ -65,8 +64,11 @@ export default function AgentRegistrationPage() {
   const { myAgent, isRegistered, isLoading, publishRegistration, deleteRegistration, defaultRelays, defaultInput } =
     useAgentRegistration();
 
-  const [input, setInput] = useState<AgentRegistrationInput>(defaultInput);
-  const [loadedExisting, setLoadedExisting] = useState(false);
+  const [input, setInput] = useState<AgentRegistrationInput>(() => ({
+    ...defaultInput(),
+    relays: defaultRelays.length > 0 ? defaultRelays : [],
+  }));
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   useSeoMeta({
     title: 'Register as Agent — PontPay',
@@ -78,21 +80,10 @@ export default function AgentRegistrationPage() {
   const profileName = author.data?.metadata?.name ?? '';
   const profileAbout = author.data?.metadata?.about ?? '';
 
-  useEffect(() => {
-    if (profileName && !loadedExisting && !input.name) {
-      setInput((prev) => ({ ...prev, name: profileName }));
-    }
-    if (profileAbout && !loadedExisting && !input.about) {
-      setInput((prev) => ({ ...prev, about: profileAbout }));
-    }
-  }, [profileName, profileAbout, loadedExisting, input.name, input.about]);
-
-  // Set default relays for new registrations
-  useEffect(() => {
-    if (!isRegistered && input.relays.length === 0 && defaultRelays.length > 0) {
-      setInput((prev) => ({ ...prev, relays: defaultRelays }));
-    }
-  }, [isRegistered, input.relays, defaultRelays]);
+  // Compute "now" once for relative day displays (avoids impure Date.now in render)
+  const [nowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const escrowExpiryDays = Math.max(1, Math.floor((input.escrowExpiresAt - nowSec) / 86400));
+  const offerExpiryDays = Math.max(1, Math.floor((input.offerExpiresAt - nowSec) / 86400));
 
   if (!user) {
     return (
@@ -128,7 +119,31 @@ export default function AgentRegistrationPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.name.trim() || !input.price.trim()) return;
+    if (!input.name.trim() || !input.price.trim()) {
+      setValidationError('Name and price are required.');
+      return;
+    }
+    if (parseFloat(input.faMin) > parseFloat(input.faMax)) {
+      setValidationError('Minimum fiat amount cannot exceed maximum.');
+      return;
+    }
+    if (input.offerExpiresAt <= nowSec) {
+      setValidationError('Offer expiry must be in the future.');
+      return;
+    }
+    if (input.escrowExpiresAt <= nowSec) {
+      setValidationError('Escrow descriptor expiry must be in the future.');
+      return;
+    }
+    if (input.paymentChannels.length === 0) {
+      setValidationError('At least one payment channel is required.');
+      return;
+    }
+    if (input.escrowNetworks.length === 0) {
+      setValidationError('At least one settlement network is required.');
+      return;
+    }
+    setValidationError(null);
     publishRegistration.mutate(input);
   };
 
@@ -198,7 +213,7 @@ export default function AgentRegistrationPage() {
                 <Label htmlFor="name">Agent name *</Label>
                 <Input
                   id="name"
-                  placeholder="e.g. Nairobi Central Exchange"
+                  placeholder={profileName || 'e.g. Nairobi Central Exchange'}
                   value={input.name}
                   onChange={(e) => handleField('name', e.target.value)}
                   required
@@ -209,7 +224,7 @@ export default function AgentRegistrationPage() {
                 <Label htmlFor="about">About / description</Label>
                 <Textarea
                   id="about"
-                  placeholder="Describe your services, experience, and what makes you a trusted agent."
+                  placeholder={profileAbout || 'Describe your services, experience, and what makes you a trusted agent.'}
                   value={input.about}
                   onChange={(e) => handleField('about', e.target.value)}
                   rows={3}
@@ -256,8 +271,8 @@ export default function AgentRegistrationPage() {
                     id="escrowExpiresAt"
                     type="number"
                     min="1"
-                    value={Math.max(1, Math.floor((input.escrowExpiresAt - Date.now() / 1000) / 86400))}
-                    onChange={(e) => handleField('escrowExpiresAt', Math.floor(Date.now() / 1000) + parseInt(e.target.value || '30', 10) * 86400)}
+                    value={escrowExpiryDays}
+                    onChange={(e) => handleField('escrowExpiresAt', nowSec + parseInt(e.target.value || '30', 10) * 86400)}
                   />
                 </div>
               </div>
@@ -452,8 +467,8 @@ export default function AgentRegistrationPage() {
                     id="offerExpiresAt"
                     type="number"
                     min="1"
-                    value={Math.max(1, Math.floor((input.offerExpiresAt - Date.now() / 1000) / 86400))}
-                    onChange={(e) => handleField('offerExpiresAt', Math.floor(Date.now() / 1000) + parseInt(e.target.value || '7', 10) * 86400)}
+                    value={offerExpiryDays}
+                    onChange={(e) => handleField('offerExpiresAt', nowSec + parseInt(e.target.value || '7', 10) * 86400)}
                   />
                 </div>
               </div>
@@ -529,6 +544,14 @@ export default function AgentRegistrationPage() {
               </p>
             </div>
           </div>
+
+          {/* Validation error */}
+          {validationError && (
+            <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-600">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{validationError}</span>
+            </div>
+          )}
 
           {/* Actions */}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">

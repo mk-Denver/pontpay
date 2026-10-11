@@ -43,16 +43,16 @@ export function useEscrowDiscovery(relays?: string[]) {
     refetchOnMount: false,
   });
 
-  /** Escrows that have a service schema block and are still selectable. */
-  const standaloneEscrows = useMemo(
-    () => (escrows ?? []).filter((e) => !!e.service?.schema?.url && isDescriptorSelectable(e)),
-    [escrows],
-  );
-
   /** Escrows that are still selectable (not expired). */
   const activeEscrows = useMemo(
     () => (escrows ?? []).filter((e) => isDescriptorSelectable(e)),
     [escrows],
+  );
+
+  /** Escrows that have a service schema block and are still selectable. */
+  const standaloneEscrows = useMemo(
+    () => activeEscrows.filter((e) => !!e.service?.schema?.url),
+    [activeEscrows],
   );
 
   return {

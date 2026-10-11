@@ -316,11 +316,21 @@ function LiveCoordDetailPanel({ coordinationId, fallbackCoord }: { coordinationI
   const { useCoordination } = useSwapStateMachine();
   const { data: liveCoord, isLoading } = useCoordination(coordinationId);
   const coord = liveCoord ?? fallbackCoord;
+  const isNotFound = !isLoading && liveCoord === null;
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (isNotFound) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-sm text-muted-foreground">
+        <AlertCircle className="mb-2 h-6 w-6" />
+        Coordination not found on relays. Showing last known state.
       </div>
     );
   }
@@ -408,12 +418,18 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
     try {
       const result = await payInvoice(customerInvoice.payload.data);
       if (result) {
-        await publishCoordinationAction.mutateAsync({
-          coordinationId: coord.coordinationId,
-          action: 'core/settle',
-          prevEventId: chainTip,
-        });
+        // Only settle if we're in the correct state and authorized
+        if (coord.state === 'settlement_authorized' && isAuthorizedSigner('core/settle', myPubkey, coord)) {
+          await publishCoordinationAction.mutateAsync({
+            coordinationId: coord.coordinationId,
+            action: 'core/settle',
+            prevEventId: chainTip,
+          });
+        }
       }
+    } catch (err) {
+      console.error('Invoice payment failed:', err);
+      alert('Failed to pay the Lightning invoice. Please try again.');
     } finally {
       setPayingInvoice(false);
     }
@@ -421,10 +437,11 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
 
   // Agent generates a Lightning invoice and sends it to the customer (for sell direction)
   const handleGenerateAndSendInvoice = async () => {
-    if (!coord.terms.bitcoin.amount) return;
+    const sats = parseInt(coord.terms.bitcoin.amount, 10);
+    if (isNaN(sats) || sats <= 0) return;
     setGeneratingInvoice(true);
     try {
-      const result = await makeInvoice(parseInt(coord.terms.bitcoin.amount, 10), `Pontmore sell ${coord.coordinationId.slice(0, 8)}`);
+      const result = await makeInvoice(sats, `Pontmore sell ${coord.coordinationId.slice(0, 8)}`);
       if (result) {
         await sendMessage.mutateAsync({
           swapId: coord.coordinationId,
@@ -434,6 +451,9 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
           label: `Sell ${coord.terms.bitcoin.amount} sats — pay this invoice`,
         });
       }
+    } catch (err) {
+      console.error('Invoice generation failed:', err);
+      alert('Failed to generate Lightning invoice. Please try again.');
     } finally {
       setGeneratingInvoice(false);
     }
@@ -444,6 +464,10 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
   const hasSentInvoice = messages?.some(
     (m) => m.payload.type === 'invoice' && m.senderPubkey === myPubkey,
   );
+
+  // Single guard for ALL async action handlers to prevent chain forks
+  const isAnyActionPending = actionPending !== null || payingInvoice || generatingInvoice ||
+    publishCoordinationAction.isPending;
 
   return (
     <div className="space-y-5">
@@ -461,6 +485,7 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
       <div>
         <p className="mb-2 text-sm font-medium">State progress</p>
         {!isTerminal && coord.state !== 'disputed' ? (
+          currentIndex >= 0 ? (
           <div className="flex items-center gap-1 overflow-x-auto pb-1">
             {STATE_FLOW.map((state, i) => {
               const isPast = i < currentIndex;
@@ -482,6 +507,12 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
               );
             })}
           </div>
+          ) : (
+            // State not in normal flow (e.g. refund_authorized) — show as badge
+            <Badge variant="outline" className={STATE_COLORS[coord.state]}>
+              {STATE_LABELS[coord.state]}
+            </Badge>
+          )
         ) : (
           <Badge variant="outline" className={STATE_COLORS[coord.state]}>
             {STATE_LABELS[coord.state]}
@@ -508,7 +539,7 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
                     {customerInvoice.payload.data.slice(0, 50)}...
                   </code>
                   {hasWallet ? (
-                    <Button onClick={handlePayInvoice} disabled={payingInvoice || isPaying} size="sm" className="w-full">
+                    <Button onClick={handlePayInvoice} disabled={isAnyActionPending || payingInvoice || isPaying} size="sm" className="w-full">
                       {payingInvoice || isPaying ? (
                         <><Loader2 className="h-4 w-4 animate-spin" /> Paying invoice…</>
                       ) : (
@@ -543,7 +574,7 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
                     Generate a Lightning invoice for the customer to pay
                     ({formatSats(coord.terms.bitcoin.amount)}).
                   </p>
-                  <Button onClick={handleGenerateAndSendInvoice} disabled={generatingInvoice || isCreatingInvoice} size="sm" className="w-full">
+                  <Button onClick={handleGenerateAndSendInvoice} disabled={isAnyActionPending || generatingInvoice || isCreatingInvoice} size="sm" className="w-full">
                     {generatingInvoice || isCreatingInvoice ? (
                       <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</>
                     ) : (
@@ -599,7 +630,7 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
                   variant={action.variant}
                   size="sm"
                   onClick={() => handleAction(action.action, action.data)}
-                  disabled={actionPending !== null}
+                  disabled={isAnyActionPending}
                 >
                   {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
                   {action.label}

@@ -19,7 +19,6 @@
 
 import { useNostr } from '@nostrify/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback } from 'react';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useAppContext } from '@/hooks/useAppContext';
@@ -31,7 +30,6 @@ import {
   PONTMORE_OFFER_KIND,
   PONTMORE_SWAP_PROFILE,
   parsePontmoreAgent,
-  swapTypeToDirection,
   type PontmoreAgent,
   type SwapType,
 } from '@/lib/pontmore';
@@ -191,7 +189,7 @@ function buildOfferTags(input: AgentRegistrationInput, pubkey: string): string[]
     ['network', input.network],
     ['layer', input.layer],
     ['expires_at', input.offerExpiresAt.toString()],
-    ['expiration', (input.offerExpiresAt + DAY).toString()],
+    ['expiration', (input.offerExpiresAt + 7 * DAY).toString()],
   ];
 
   for (const ch of input.paymentChannels) {
@@ -279,8 +277,8 @@ export function useAgentRegistration() {
           content: JSON.stringify(profile),
           tags: [],
         });
-      } catch {
-        // profile update is best-effort
+      } catch (err) {
+        console.warn('Profile update failed (non-fatal):', err);
       }
 
       // 2. Publish companion escrow descriptor (PIP-01, kind 30361) first
@@ -364,14 +362,6 @@ export function useAgentRegistration() {
     },
   });
 
-  /** Convert a PontmoreAgent back into form input for editing. */
-  const agentToInput = useCallback(
-    (_agent: PontmoreAgent): AgentRegistrationInput => {
-      return defaultInput();
-    },
-    [],
-  );
-
   /** Default relays from app config for new registrations. */
   const defaultRelays = config.relayMetadata.relays
     .filter((r) => r.write)
@@ -383,7 +373,6 @@ export function useAgentRegistration() {
     isLoading: myAgentQuery.isLoading,
     publishRegistration,
     deleteRegistration,
-    agentToInput,
     defaultRelays,
     defaultInput,
   };

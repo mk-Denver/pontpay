@@ -39,13 +39,10 @@ import { useEscrowConnection } from '@/hooks/useEscrowConnection';
 import { useNostr } from '@nostrify/react';
 import {
   formatSats,
-  estimateFiat,
   deriveBitcoinAmount,
   PONTMORE_ESCROW_KIND,
-  PONTMORE_COORDINATION_ROOT_KIND,
   parsePontmoreEscrow,
   type PontmoreCoordination,
-  type LocalCoordinationRecord,
   type CoordinationState,
   type SwapType,
 } from '@/lib/pontmore';
@@ -279,6 +276,8 @@ function SwapRow({ swap }: { swap: SwapDisplayRow }) {
 
 function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselectedAgent?: string }) {
   const { nostr } = useNostr();
+  const { user } = useCurrentUser();
+  const myPubkey = user?.pubkey ?? '';
   const { agents, isLoading, refetch, isFetching } = useAgents();
   const { hasWallet, balance } = useUnifiedWallet();
   const { publishCoordinationRoot } = useSwapStateMachine();
@@ -292,6 +291,7 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
   const [memo, setMemo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [nowSec] = useState(() => Math.floor(Date.now() / 1000));
 
   const isBuy = swapType === 'buy';
 
@@ -349,25 +349,25 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
       }
 
       // Check expiry
-      if (descriptor.expiresAt <= Date.now() / 1000) {
+      if (descriptor.expiresAt <= nowSec) {
         setStatusMsg('The escrow descriptor has expired. The agent needs to republish.');
         return;
       }
 
       // 2. Optionally create an escrow instance via the HTTP API (for Lightning funding)
-      let escrowRef = '';
       let invoice: string | null = null;
+      let escrowFailMsg: string | null = null;
       if (isEscrowConnected && isBuy) {
         try {
           setStatusMsg('Creating escrow instance…');
           const result = await createEscrow({ amount_sats: parseInt(bitcoinAmount, 10), description: `PontPay buy ${bitcoinAmount} sats` });
-          escrowRef = result.escrow_id;
 
           setStatusMsg('Getting funding instructions…');
           const funding = await getFundingInstructions(result.escrow_id);
           invoice = funding.payment_request;
-        } catch {
-          // escrow HTTP API is optional — coordination root can be published without it
+        } catch (err) {
+          console.warn('Escrow HTTP API failed (non-fatal):', err);
+          escrowFailMsg = 'Escrow funding unavailable — proceeding without Lightning invoice.';
         }
       }
 
@@ -409,19 +409,18 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
             payloadType: 'message', data: memo, label: 'Note',
           });
         }
-        setStatusMsg(`${isBuy ? 'Buy' : 'Sell'} coordination proposed! The agent will accept and process your swap.`);
+        setStatusMsg(`${isBuy ? 'Buy' : 'Sell'} coordination proposed! The agent will accept and process your swap.${escrowFailMsg ? ' ' + escrowFailMsg : ''}`);
       } else {
-        setStatusMsg('Coordination root published.');
+        setStatusMsg(`Coordination root published.${escrowFailMsg ? ' ' + escrowFailMsg : ''}`);
       }
+    } catch (err) {
+      console.error('Swap submission failed:', err);
+      setStatusMsg('Failed to submit coordination. Please try again.');
     } finally {
       setSubmitting(false);
       setTimeout(() => { setStatusMsg(null); setFiatAmount(''); setPayoutDetails(''); setMemo(''); }, 10000);
     }
   };
-
-  // Get the current user's pubkey
-  const { user } = useCurrentUser();
-  const myPubkey = user?.pubkey ?? '';
 
   return (
     <div className="space-y-4">

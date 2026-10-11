@@ -280,6 +280,8 @@ export interface LocalCoordinationRecord {
   updatedAt: number;
   direction: 'outgoing' | 'incoming';
   rootEventId?: string;
+  expiresAt?: number;
+  deadlines?: { fiat_pay_by: number; fiat_confirm_by: number };
 }
 
 // ─── NIP-69 Offer Types ─────────────────────────────────────────
@@ -351,12 +353,14 @@ export function estimateFiat(sats: number, btcPriceUsd: number, currency: string
   return Math.round(usd * rate);
 }
 
-/** Compute the Bitcoin amount (sats) from fiat amount and price (fiat per BTC). */
+/** Compute the Bitcoin amount (sats) from fiat amount and price (fiat per BTC).
+ *  Uses integer arithmetic to avoid floating-point precision issues. */
 export function deriveBitcoinAmount(fiatAmount: string, price: string): string {
-  const fiat = parseFloat(fiatAmount);
-  const p = parseFloat(price);
-  if (!fiat || !p || p <= 0) return '0';
-  return Math.floor((fiat * 100_000_000) / p).toString();
+  const fiatCents = Math.round(parseFloat(fiatAmount) * 100);
+  const priceCents = Math.round(parseFloat(price) * 100);
+  if (!fiatCents || !priceCents || priceCents <= 0) return '0';
+  // sats = floor(fiat * 100_000_000 / price) = floor(fiatCents * 10_000_000 / priceCents)
+  return Math.floor((fiatCents * 10_000_000) / priceCents).toString();
 }
 
 /** Compute a sha256-bytes@1 commitment digest from arbitrary bytes. */
@@ -565,12 +569,9 @@ export function extractEscrowRefs(tags: string[][]): {
   let descriptorCoordinate = '';
 
   for (const tag of tags) {
-    if (tag[0] === 'e' && tag[3] === 'escrow-version') {
-      descriptorId = tag[1];
-    }
-    if (tag[0] === 'a' && tag[3] === 'escrow') {
-      descriptorCoordinate = tag[1];
-    }
+    if (tag[0] === 'e' && tag[3] === 'escrow-version') descriptorId = tag[1];
+    if (tag[0] === 'a' && tag[3] === 'escrow') descriptorCoordinate = tag[1];
+    if (descriptorId && descriptorCoordinate) break;
   }
 
   return { descriptorId, descriptorCoordinate };
@@ -607,13 +608,13 @@ export function extractActionRefs(tags: string[][]): {
  */
 export function deriveCoordinationState(
   actions: CoordinationAction[],
-  rootCreatedAt: number,
   rootExpiresAt: number,
 ): { state: CoordinationState; disputed: boolean } {
   let state: CoordinationState = 'proposed';
   let disputed = false;
 
-  for (const action of actions) {
+  for (let i = 0; i < actions.length; i++) {
+    const action = actions[i];
     switch (action.action) {
       case 'core/accept':
         state = 'accepted';
@@ -667,8 +668,9 @@ export function deriveCoordinationState(
         break;
     }
 
-    // Stop processing once terminal (except for dispute resolution)
-    if (TERMINAL_STATES.includes(state) && action.action !== 'core/resolve_dispute') {
+    // Stop processing once terminal — dispute resolution can still override
+    const nextAction = actions[i + 1];
+    if (TERMINAL_STATES.includes(state) && (!nextAction || nextAction.action !== 'core/resolve_dispute')) {
       break;
     }
   }
@@ -729,8 +731,9 @@ export function reconstructActionChain(
 
     if (candidates.length > 1) {
       forked = true;
-      // Keep the earliest by created_at as the canonical branch
-      candidates.sort((a, b) => a.created_at - b.created_at);
+      // Use event ID lexicographic ordering as a deterministic tie-breaker
+      // (created_at is set by the event creator and is not consensus-validated)
+      candidates.sort((a, b) => a.eventId.localeCompare(b.eventId));
     }
 
     const next = candidates[0];
@@ -757,7 +760,7 @@ export function buildCoordinationFromEvents(
   const { chain, forked } = reconstructActionChain(rootEvent.id, actionEvents);
 
   // If forked, the coordination is frozen — derive state from the canonical branch
-  const { state, disputed } = deriveCoordinationState(chain, rootEvent.created_at, root.expires_at);
+  const { state, disputed } = deriveCoordinationState(chain, root.expires_at);
 
   // Determine direction: if myPubkey is the proposer, it's outgoing (we proposed)
   const proposer = rootEvent.pubkey;
@@ -842,7 +845,7 @@ export function parseSwapOffer(event: {
     d: getTag('d') ?? '',
     k,
     f: getTag('f') ?? '',
-    s: (getTag('s') as 'pending' | 'canceled') ?? 'pending',
+    s: (getTag('s') === 'canceled' ? 'canceled' : 'pending'),
     amt: getTag('amt') ?? '0',
     faMin: fa[0] ?? '0',
     faMax: fa[1] ?? fa[0] ?? '0',

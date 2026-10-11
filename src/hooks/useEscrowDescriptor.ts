@@ -36,11 +36,11 @@ function buildEscrowContent(input: EscrowDescriptorInput): string {
   const content: Record<string, unknown> = {
     version: 1,
     escrow_type: input.escrowType,
-    networks: input.networks,
+    networks: input.networks.map((n) => n.toLowerCase()),
     expires_at: input.expiresAt,
   };
 
-  if (input.serviceSchemaType && input.serviceSchemaUrl) {
+  if (input.serviceSchemaType && input.serviceSchemaUrl && input.serviceSchemaUrl.startsWith('https://')) {
     content.service = {
       schema: {
         type: input.serviceSchemaType,
@@ -68,7 +68,7 @@ export function useEscrowDescriptor() {
       ];
 
       for (const network of input.networks) {
-        tags.push(['t', `pontmore-network:${network}`]);
+        tags.push(['t', `pontmore-network:${network.toLowerCase()}`]);
       }
 
       const event = await publishEvent({

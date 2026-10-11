@@ -330,7 +330,7 @@ function AgentCard({ agent, isOwn }: { agent: AgentWithOffers; isOwn: boolean })
 }
 
 function OfferRow({ offer }: { offer: SwapOffer }) {
-  const directionLabel = offer.k === 'sell' ? 'Fiat → BTC' : 'BTC → Fiat';
+  const directionLabel = offer.k === 'sell' ? 'Selling BTC' : 'Buying BTC';
   const btcAmount = deriveBitcoinAmount(offer.faMax, offer.price);
 
   return (
@@ -341,10 +341,10 @@ function OfferRow({ offer }: { offer: SwapOffer }) {
       </div>
       <div className="mt-1.5 flex items-center justify-between text-xs text-muted-foreground">
         <span>{offer.faMin} – {offer.faMax} {offer.f}</span>
-        <span>{formatSats(btcAmount)}</span>
+        <span>{btcAmount !== '0' ? formatSats(btcAmount) : '—'}</span>
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
-        <span className="font-mono">{offer.price} {offer.f}/BTC</span>
+        <span className="font-mono">{Number(offer.price).toLocaleString(undefined, { maximumFractionDigits: 8 })} {offer.f}/BTC</span>
         {offer.layer && <span> · {offer.layer}</span>}
       </div>
       {offer.pm.length > 0 && (

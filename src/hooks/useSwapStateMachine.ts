@@ -25,24 +25,38 @@ import {
   PONTMORE_COORDINATION_ACTION_KIND,
   PONTMORE_SWAP_PROFILE,
   PONTMORE_PIP02_VERSION,
-  PONTMORE_ESCROW_KIND,
   buildCoordinationFromEvents,
-  parseCoordinationRoot,
-  reconstructActionChain,
   swapTypeToDirection,
-  directionToSwapType,
   type SwapType,
-  type SwapDirection,
-  type CoordinationState,
-  type CoordinationActionId,
   type PontmoreCoordination,
   type LocalCoordinationRecord,
   type CoordinationRootContent,
   type CoordinationActionContent,
+  type CoordinationActionId,
+  type CoordinationState,
 } from '@/lib/pontmore';
 
 const HOUR = 3600;
-const DAY = 86_400;
+
+/** Map a kernel/profile action to its resulting coordination state. */
+function deriveStateFromAction(action: CoordinationActionId): CoordinationState {
+  switch (action) {
+    case 'core/accept': return 'accepted';
+    case 'core/decline': return 'declined';
+    case 'core/secure': return 'secured';
+    case 'swap/fiat_sent': return 'fiat_sent';
+    case 'swap/fiat_confirmed': return 'fiat_confirmed';
+    case 'core/authorize_settlement': return 'settlement_authorized';
+    case 'core/settle': return 'settled';
+    case 'core/authorize_refund': return 'refund_authorized';
+    case 'core/refund': return 'refunded';
+    case 'core/cancel': return 'cancelled';
+    case 'core/expire': return 'expired';
+    case 'core/open_dispute': return 'disputed';
+    case 'core/resolve_dispute': return 'settled';
+    default: return 'proposed';
+  }
+}
 
 /** Input for publishing a coordination root (kind 7300). */
 export interface PublishRootParams {
@@ -242,7 +256,7 @@ export function useSwapStateMachine() {
       setLocalCoord((prev) =>
         prev.map((s) =>
           s.coordinationId === params.coordinationId
-            ? { ...s, updatedAt: event.created_at }
+            ? { ...s, state: deriveStateFromAction(params.action), updatedAt: event.created_at }
             : s,
         ),
       );
@@ -332,7 +346,7 @@ export function useSwapStateMachine() {
         // Fetch all actions for these roots in one batch
         const rootIds = rootEvents.map((e) => e.id);
         const actionEvents = await nostr.query(
-          [{ kinds: [PONTMORE_COORDINATION_ACTION_KIND], '#e': rootIds, limit: 1000 }],
+          [{ kinds: [PONTMORE_COORDINATION_ACTION_KIND], '#e': rootIds, limit: Math.max(1000, rootIds.length * 50) }],
           { signal: c.signal },
         );
 
@@ -408,9 +422,9 @@ function localToCoordination(local: LocalCoordinationRecord, myPubkey: string): 
       fiat: { currency: local.fiatCurrency, amount: local.fiatAmount },
       bitcoin: { amount: local.bitcoinAmount, unit: 'sat', network: 'lightning' },
       payment_channel: local.paymentChannel,
-      deadlines: { fiat_pay_by: 0, fiat_confirm_by: 0 },
+      deadlines: local.deadlines ?? { fiat_pay_by: 0, fiat_confirm_by: 0 },
     },
-    expiresAt: 0,
+    expiresAt: local.expiresAt ?? 0,
     participants: [
       { pubkey: local.agentPubkey, role: 'swap/agent' },
       { pubkey: local.customerPubkey, role: 'swap/customer' },

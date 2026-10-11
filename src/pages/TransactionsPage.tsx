@@ -61,7 +61,6 @@ import {
   type CoordinationState,
   type PontmoreCoordination,
   type CoordinationActionId,
-  type SwapType,
 } from '@/lib/pontmore';
 
 type TxFilter = 'all' | 'buy' | 'sell';
@@ -104,9 +103,8 @@ const STATE_FLOW: CoordinationState[] = [
 ];
 
 /** Customer actions available in a given coordination state. */
-function getCustomerActions(coord: PontmoreCoordination): { label: string; action: CoordinationActionId; variant: 'default' | 'outline' | 'destructive'; icon: typeof Check; data?: Record<string, unknown> }[] {
-  const { state, terms, participants, rootEvent } = coord;
-  const myPubkey = rootEvent.pubkey; // The proposer is the customer in outgoing direction
+function getCustomerActions(coord: PontmoreCoordination, myPubkey: string): { label: string; action: CoordinationActionId; variant: 'default' | 'outline' | 'destructive'; icon: typeof Check; data?: Record<string, unknown> }[] {
+  const { state } = coord;
   const actions: ReturnType<typeof getCustomerActions> = [];
 
   const isTerminal = TERMINAL_STATES.includes(state);
@@ -158,7 +156,10 @@ export default function TransactionsPage() {
     description: 'View your full Pontmore coordination history.',
   });
 
-  const allCoords = nostrCoords && nostrCoords.length > 0 ? nostrCoords : [];
+  const allCoords = useMemo(
+    () => nostrCoords && nostrCoords.length > 0 ? nostrCoords : [],
+    [nostrCoords],
+  );
 
   const filtered = useMemo(() => {
     return allCoords.filter((coord) => {
@@ -359,7 +360,7 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
   const [sending, setSending] = useState(false);
 
   const myPubkey = user?.pubkey ?? '';
-  const actions = useMemo(() => getCustomerActions(coord), [coord]);
+  const actions = useMemo(() => getCustomerActions(coord, myPubkey), [coord, myPubkey]);
 
   // Chain tip for publishing the next action
   const chainTip = coord.actions.length > 0
@@ -375,6 +376,9 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
         prevEventId: chainTip,
         data,
       });
+    } catch (err) {
+      console.error('Action failed:', err);
+      alert(`Failed to publish action: ${actionId}. Please try again.`);
     } finally {
       setActionPending(null);
     }
@@ -399,6 +403,9 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
           label: 'Lightning payment preimage',
         });
       }
+    } catch (err) {
+      console.error('Invoice payment failed:', err);
+      alert('Failed to pay the Lightning invoice. Please try again.');
     } finally {
       setPayingInvoice(false);
     }
@@ -416,6 +423,9 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
         data: sendData,
       });
       setSendData('');
+    } catch (err) {
+      console.error('Message send failed:', err);
+      alert('Failed to send message. Please try again.');
     } finally {
       setSending(false);
     }
@@ -440,6 +450,7 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
       <div>
         <p className="mb-2 text-sm font-medium">State progress</p>
         {!isTerminal && coord.state !== 'disputed' ? (
+          currentIndex >= 0 ? (
           <div className="flex items-center gap-1 overflow-x-auto pb-1">
             {STATE_FLOW.map((state, i) => {
               const isPast = i < currentIndex;
@@ -461,6 +472,11 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
               );
             })}
           </div>
+          ) : (
+            <Badge variant="outline" className={STATE_COLORS[coord.state]}>
+              {STATE_LABELS[coord.state]}
+            </Badge>
+          )
         ) : (
           <Badge variant="outline" className={STATE_COLORS[coord.state]}>
             {STATE_LABELS[coord.state]}

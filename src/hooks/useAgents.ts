@@ -14,7 +14,6 @@ import {
   PONTMORE_OFFER_KIND,
   parsePontmoreAgent,
   parseSwapOffer,
-  directionToSwapType,
   type PontmoreAgent,
   type SwapOffer,
 } from '@/lib/pontmore';
@@ -41,56 +40,48 @@ export function useAgents(filters?: UseAgentsFilters, relays?: string[]) {
         ? nostr.group(relays)
         : nostr;
 
-      // Query agent definitions and offers in parallel
-      const [agentEvents, offerEvents] = await Promise.all([
-        target.query(
-          [
-            {
-              kinds: [PONTMORE_AGENT_KIND],
-              '#t': [PONTMORE_AGENT_TAG],
-              limit: 100,
-            },
-          ],
-          { signal: c.signal },
-        ),
-        target.query(
-          [
-            {
-              kinds: [PONTMORE_OFFER_KIND],
-              limit: 200,
-            },
-          ],
-          { signal: c.signal },
-        ),
-      ]);
+      // Step 1: fetch agent definitions
+      const agentEvents = await target.query(
+        [{ kinds: [PONTMORE_AGENT_KIND], '#t': [PONTMORE_AGENT_TAG], limit: 100 }],
+        { signal: c.signal },
+      );
 
-      // Parse agents
       const parsedAgents = agentEvents
         .map(parsePontmoreAgent)
         .filter((a): a is PontmoreAgent => a !== null)
         .sort((a, b) => b.event.created_at - a.event.created_at);
 
-      // Parse and group offers by pubkey
+      // Step 2: fetch offers only for known agent pubkeys
+      const agentPubkeys = parsedAgents.map((a) => a.event.pubkey);
+      const offerEvents = agentPubkeys.length > 0
+        ? await target.query(
+            [{ kinds: [PONTMORE_OFFER_KIND], authors: agentPubkeys, limit: 200 }],
+            { signal: c.signal },
+          )
+        : [];
+
+      // Parse and group offers by pubkey — filter out malformed/expired
+      const nowSec = Math.floor(Date.now() / 1000);
       const offersByPubkey = new Map<string, SwapOffer[]>();
       for (const evt of offerEvents) {
         const offer = parseSwapOffer(evt);
-        if (!offer) continue;
+        if (!offer || !offer.f || !offer.price) continue;
         const arr = offersByPubkey.get(offer.event.pubkey) ?? [];
         arr.push(offer);
         offersByPubkey.set(offer.event.pubkey, arr);
       }
 
-      // Enrich agents with offers
+      // Enrich agents with offers — filter to pending and not expired
       const enriched: AgentWithOffers[] = parsedAgents.map((agent) => ({
         ...agent,
         offers: (offersByPubkey.get(agent.event.pubkey) ?? []).filter(
-          (o) => o.s === 'pending',
+          (o) => o.s === 'pending' && (!o.expiresAt || o.expiresAt > nowSec),
         ),
       }));
 
       return enriched;
     },
-    staleTime: Infinity,
+    staleTime: 60_000,
     refetchOnMount: false,
   });
 
@@ -99,13 +90,11 @@ export function useAgents(filters?: UseAgentsFilters, relays?: string[]) {
     if (!filters) return agents;
 
     return agents.filter((agent) => {
-      // Currency filter: check offers
       if (filters.currency) {
         const hasCurrency = agent.offers.some((o) => o.f === filters.currency);
         if (!hasCurrency) return false;
       }
 
-      // Search filter: match against d-tag, pubkey, or offer currencies
       if (filters.search) {
         const q = filters.search.toLowerCase();
         const matches =
@@ -135,21 +124,14 @@ export function useAgent(pubkey: string | undefined) {
     queryFn: async (c) => {
       if (!pubkey) return null;
       const [event] = await nostr.query(
-        [
-          {
-            kinds: [PONTMORE_AGENT_KIND],
-            authors: [pubkey],
-            '#t': [PONTMORE_AGENT_TAG],
-            limit: 1,
-          },
-        ],
+        [{ kinds: [PONTMORE_AGENT_KIND], authors: [pubkey], '#t': [PONTMORE_AGENT_TAG], limit: 1 }],
         { signal: c.signal },
       );
       if (!event) return null;
       return parsePontmoreAgent(event);
     },
     enabled: !!pubkey,
-    staleTime: Infinity,
+    staleTime: 60_000,
     refetchOnMount: false,
   });
 }

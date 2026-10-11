@@ -23,6 +23,7 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useEscrowDiscovery } from '@/hooks/useEscrowDiscovery';
 import { useEscrowConnection } from '@/hooks/useEscrowConnection';
 import { RelaySelector, useDiscoveryRelays } from '@/components/RelaySelector';
+import { isDescriptorSelectable } from '@/lib/pontmore';
 
 export default function EscrowPage() {
   const { user } = useCurrentUser();
@@ -181,7 +182,7 @@ export default function EscrowPage() {
                         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                           <Clock className="h-3.5 w-3.5" />
                           <span>
-                            {escrow.expiresAt > Date.now() / 1000 ? (
+                            {isDescriptorSelectable(escrow) ? (
                               <>Expires: <strong className="text-foreground">{new Date(escrow.expiresAt * 1000).toLocaleDateString()}</strong></>
                             ) : (
                               <span className="text-red-600 font-medium">Expired</span>
