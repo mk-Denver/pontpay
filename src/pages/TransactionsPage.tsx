@@ -19,7 +19,6 @@ import {
   Trash2,
   Filter,
   Loader2,
-  Zap,
   Check,
   X,
   AlertCircle,
@@ -53,7 +52,6 @@ import {
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
 import { useSwapMessages, type SwapPayloadType, type SwapMessage } from '@/hooks/useSwapMessages';
-import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import {
   formatSats,
   TERMINAL_STATES,
@@ -352,10 +350,8 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
   const { user } = useCurrentUser();
   const { publishCoordinationAction } = useSwapStateMachine();
   const { useSwapInbox, sendMessage, hasNip44 } = useSwapMessages();
-  const { hasWallet, payInvoice, isPaying } = useUnifiedWallet();
   const { data: messages, isLoading: msgLoading } = useSwapInbox(coord.coordinationId);
   const [actionPending, setActionPending] = useState<string | null>(null);
-  const [payingInvoice, setPayingInvoice] = useState(false);
   const [sendData, setSendData] = useState('');
   const [sending, setSending] = useState(false);
 
@@ -381,33 +377,6 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
       alert(`Failed to publish action: ${actionId}. Please try again.`);
     } finally {
       setActionPending(null);
-    }
-  };
-
-  // Find the agent's invoice (for sell, agent sends invoice for customer to pay)
-  const agentInvoice = messages?.find(
-    (m) => m.payload.type === 'invoice' && m.senderPubkey !== myPubkey,
-  );
-
-  const handlePayAgentInvoice = async () => {
-    if (!agentInvoice) return;
-    setPayingInvoice(true);
-    try {
-      const result = await payInvoice(agentInvoice.payload.data);
-      if (result) {
-        await sendMessage.mutateAsync({
-          swapId: coord.coordinationId,
-          recipientPubkey: coord.participants.find((p) => p.role === 'swap/agent')?.pubkey ?? '',
-          payloadType: 'payment_proof',
-          data: result.preimage,
-          label: 'Lightning payment preimage',
-        });
-      }
-    } catch (err) {
-      console.error('Invoice payment failed:', err);
-      alert('Failed to pay the Lightning invoice. Please try again.');
-    } finally {
-      setPayingInvoice(false);
     }
   };
 
@@ -508,31 +477,6 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
         </div>
       )}
 
-      {/* Lightning payment — for sell, customer pays agent's invoice */}
-      {coord.swapType === 'sell' && coord.state === 'accepted' && agentInvoice && (
-        <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-4">
-          <p className="mb-3 text-sm font-medium flex items-center gap-2">
-            <Zap className="h-4 w-4 text-orange-600" /> Pay online
-          </p>
-          <div className="space-y-2">
-            <code className="block truncate rounded bg-background px-2 py-1.5 text-xs">
-              {agentInvoice.payload.data.slice(0, 50)}...
-            </code>
-            {hasWallet ? (
-              <Button onClick={handlePayAgentInvoice} disabled={payingInvoice || isPaying} size="sm" className="w-full">
-                {payingInvoice || isPaying ? (
-                  <><Loader2 className="h-4 w-4 animate-spin" /> Paying invoice…</>
-                ) : (
-                  <><Zap className="h-4 w-4" /> Pay invoice ({formatSats(coord.terms.bitcoin.amount)})</>
-                )}
-              </Button>
-            ) : (
-              <p className="text-xs text-amber-600">Connect a wallet to pay the invoice.</p>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Customer actions */}
       {actions.length > 0 && (
         <div>
@@ -586,7 +530,7 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
                 <Skeleton className="h-16 w-full" />
               ) : !messages || messages.length === 0 ? (
                 <p className="rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
-                  No messages yet. The agent may send invoices or instructions here.
+                  No messages yet. The agent may send fiat payment instructions here.
                 </p>
               ) : (
                 messages.map((msg) => (

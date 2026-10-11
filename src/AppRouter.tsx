@@ -3,7 +3,7 @@ import { ScrollToTop } from "./components/ScrollToTop";
 
 import Index from "./pages/Index";
 import Dashboard from "./pages/Dashboard";
-import WalletPage from "./pages/WalletPage";
+import SwapLandingPage from "./pages/SwapLandingPage";
 import AgentsPage from "./pages/AgentsPage";
 import AgentRegistrationPage from "./pages/AgentRegistrationPage";
 import EscrowPage from "./pages/EscrowPage";
@@ -19,7 +19,7 @@ export function AppRouter() {
       <Routes>
         <Route path="/" element={<Index />} />
         <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/wallet" element={<WalletPage />} />
+        <Route path="/swap" element={<SwapLandingPage />} />
         <Route path="/agents" element={<AgentsPage />} />
         <Route path="/register-agent" element={<AgentRegistrationPage />} />
         <Route path="/escrows" element={<EscrowPage />} />

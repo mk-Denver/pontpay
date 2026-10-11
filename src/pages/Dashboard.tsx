@@ -5,9 +5,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   Zap,
-  Wallet as WalletIcon,
   Store,
-  Check,
   Loader2,
   Receipt,
   TrendingUp,
@@ -31,7 +29,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { useAgents } from '@/hooks/useAgents';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
 import { useSwapMessages } from '@/hooks/useSwapMessages';
@@ -48,7 +45,6 @@ import {
 } from '@/lib/pontmore';
 
 const CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
-const BTC_PRICE_USD = 65000;
 
 const STATE_LABELS: Record<CoordinationState, string> = {
   proposed: 'Proposed',
@@ -78,7 +74,6 @@ export default function Dashboard() {
     setAction(actionParam);
   }
 
-  const { hasWallet, balance, balanceLoading, refreshBalance } = useUnifiedWallet();
   const { localCoordinations, useMyCoordinations } = useSwapStateMachine();
   const { data: nostrCoords } = useMyCoordinations();
 
@@ -117,45 +112,18 @@ export default function Dashboard() {
             <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Dashboard</h1>
             <p className="mt-1 text-muted-foreground">Swap Bitcoin for fiat via the Pontmore agent network.</p>
           </div>
-          {hasWallet && (
-            <Button variant="outline" size="sm" onClick={refreshBalance} disabled={balanceLoading}>
-              <Zap className="h-4 w-4" /> Refresh balance
-            </Button>
-          )}
         </div>
 
-        {/* Balance + quick actions */}
-        <div className="mb-8 grid gap-6 lg:grid-cols-3">
-          <Card className="lg:col-span-1 border-orange-500/20 overflow-hidden">
-            <div className="absolute inset-0 -z-10 bg-gradient-to-br from-orange-500/5 to-transparent" />
-            <CardHeader className="pb-3">
-              <CardDescription>Wallet balance</CardDescription>
-              {balanceLoading ? <Skeleton className="h-9 w-32" /> : (
-                <CardTitle className="text-3xl">{hasWallet ? formatSats(balance) : 'Not connected'}</CardTitle>
-              )}
-            </CardHeader>
-            <CardContent>
-              {hasWallet ? (
-                <div className="space-y-2">
-                  <Badge className="bg-green-500/10 text-green-600 border-green-500/20"><Check className="mr-1 h-3 w-3" /> Connected</Badge>
-                  <p className="text-xs text-muted-foreground">≈ ${(balance / 1e8 * BTC_PRICE_USD).toFixed(2)} USD</p>
-                </div>
-              ) : (
-                <Button asChild size="sm" className="w-full"><Link to="/wallet"><WalletIcon className="h-4 w-4" /> Connect wallet</Link></Button>
-              )}
-            </CardContent>
-          </Card>
-
-          <div className="grid grid-cols-2 gap-3 lg:col-span-2">
-            <ActionButton
-              icon={ArrowDownToLine} label="Buy BTC" description="Fiat → Bitcoin"
-              onClick={() => { setAction('buy'); setSearchParams({ action: 'buy' }); }} active={action === 'buy'} color="green"
-            />
-            <ActionButton
-              icon={ArrowUpFromLine} label="Sell BTC" description="Bitcoin → Fiat"
-              onClick={() => { setAction('sell'); setSearchParams({ action: 'sell' }); }} active={action === 'sell'} color="orange"
-            />
-          </div>
+        {/* Quick actions */}
+        <div className="mb-8 grid gap-4 sm:grid-cols-2">
+          <ActionButton
+            icon={ArrowDownToLine} label="Buy BTC" description="Send fiat, receive Bitcoin via escrow"
+            onClick={() => { setAction('buy'); setSearchParams({ action: 'buy' }); }} active={action === 'buy'} color="green"
+          />
+          <ActionButton
+            icon={ArrowUpFromLine} label="Sell BTC" description="Send Bitcoin to escrow, receive fiat"
+            onClick={() => { setAction('sell'); setSearchParams({ action: 'sell' }); }} active={action === 'sell'} color="orange"
+          />
         </div>
 
         {/* Swap form */}
@@ -279,10 +247,9 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
   const { user } = useCurrentUser();
   const myPubkey = user?.pubkey ?? '';
   const { agents, isLoading, refetch, isFetching } = useAgents();
-  const { hasWallet, balance } = useUnifiedWallet();
   const { publishCoordinationRoot } = useSwapStateMachine();
   const { sendMessage, hasNip44 } = useSwapMessages();
-  const { isConnected: isEscrowConnected, connection: escrowConn, createEscrow, getFundingInstructions } = useEscrowConnection();
+  const { isConnected: isEscrowConnected, connection: escrowConn, createEscrow } = useEscrowConnection();
   const [selectedAgentPubkey, setSelectedAgentPubkey] = useState(preselectedAgent ?? '');
   const [fiatAmount, setFiatAmount] = useState('');
   const [currency, setCurrency] = useState('KES');
@@ -354,20 +321,15 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
         return;
       }
 
-      // 2. Optionally create an escrow instance via the HTTP API (for Lightning funding)
-      let invoice: string | null = null;
+      // 2. Optionally create an escrow instance via the HTTP API
       let escrowFailMsg: string | null = null;
-      if (isEscrowConnected && isBuy) {
+      if (isEscrowConnected) {
         try {
           setStatusMsg('Creating escrow instance…');
-          const result = await createEscrow({ amount_sats: parseInt(bitcoinAmount, 10), description: `PontPay buy ${bitcoinAmount} sats` });
-
-          setStatusMsg('Getting funding instructions…');
-          const funding = await getFundingInstructions(result.escrow_id);
-          invoice = funding.payment_request;
+          await createEscrow({ amount_sats: parseInt(bitcoinAmount, 10), description: `PontPay ${isBuy ? 'buy' : 'sell'} ${bitcoinAmount} sats`, funding_model: '1_of_2' });
         } catch (err) {
           console.warn('Escrow HTTP API failed (non-fatal):', err);
-          escrowFailMsg = 'Escrow funding unavailable — proceeding without Lightning invoice.';
+          escrowFailMsg = 'Escrow instance creation failed — proceeding with coordination.';
         }
       }
 
@@ -388,19 +350,13 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
         paymentChannel: paymentChannel || matchingOffer.channels[0] || 'unknown',
       });
 
-      // 4. Send encrypted details to the agent via NIP-17
+      // 4. Send fiat payment details to the agent via NIP-17
       if (hasNip44 && coordinationId) {
-        setStatusMsg('Sending encrypted details to agent…');
-        if (invoice) {
-          await sendMessage.mutateAsync({
-            swapId: coordinationId, recipientPubkey: selectedAgentPubkey, payloadType: 'invoice',
-            data: invoice, label: `${isBuy ? 'Buy' : 'Sell'} ${bitcoinAmount} sats`,
-          });
-        }
+        setStatusMsg('Sending fiat payment details to agent…');
         if (payoutDetails) {
           await sendMessage.mutateAsync({
             swapId: coordinationId, recipientPubkey: selectedAgentPubkey, payloadType: 'bank_details',
-            data: payoutDetails, label: isBuy ? 'Fiat payment details' : 'Payout details',
+            data: payoutDetails, label: isBuy ? 'Fiat payment details' : 'Fiat receiving details',
           });
         }
         if (memo) {
@@ -409,7 +365,7 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
             payloadType: 'message', data: memo, label: 'Note',
           });
         }
-        setStatusMsg(`${isBuy ? 'Buy' : 'Sell'} coordination proposed! The agent will accept and process your swap.${escrowFailMsg ? ' ' + escrowFailMsg : ''}`);
+        setStatusMsg(`${isBuy ? 'Buy' : 'Sell'} coordination proposed! The escrow will handle the BTC payout. The agent will accept and process your swap.${escrowFailMsg ? ' ' + escrowFailMsg : ''}`);
       } else {
         setStatusMsg(`Coordination root published.${escrowFailMsg ? ' ' + escrowFailMsg : ''}`);
       }
@@ -455,37 +411,20 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
               <li><strong className="text-foreground">1.</strong> Select an agent offer and enter the fiat amount</li>
               <li><strong className="text-foreground">2.</strong> A coordination root (kind 7300) is published on Nostr</li>
               <li><strong className="text-foreground">3.</strong> Agent accepts (core/accept) and escrow secures (core/secure)</li>
-              <li><strong className="text-foreground">4.</strong> You send fiat (swap/fiat_sent), agent confirms (swap/fiat_confirmed)</li>
-              <li><strong className="text-foreground">5.</strong> Escrow settles (core/settle) — Bitcoin arrives in your wallet</li>
+              <li><strong className="text-foreground">4.</strong> You send fiat to the agent (swap/fiat_sent), agent confirms (swap/fiat_confirmed)</li>
+              <li><strong className="text-foreground">5.</strong> Escrow settles (core/settle) — escrow sends BTC to the buyer</li>
             </>
           ) : (
             <>
               <li><strong className="text-foreground">1.</strong> Select an agent offer and enter the fiat amount</li>
               <li><strong className="text-foreground">2.</strong> A coordination root (kind 7300) is published on Nostr</li>
               <li><strong className="text-foreground">3.</strong> Agent accepts (core/accept) and escrow secures (core/secure)</li>
-              <li><strong className="text-foreground">4.</strong> Agent sends fiat (swap/fiat_sent), you confirm (swap/fiat_confirmed)</li>
-              <li><strong className="text-foreground">5.</strong> Escrow settles (core/settle) — fiat arrives in your account</li>
+              <li><strong className="text-foreground">4.</strong> You fund the escrow with BTC, agent sends fiat (swap/fiat_sent), you confirm (swap/fiat_confirmed)</li>
+              <li><strong className="text-foreground">5.</strong> Escrow settles (core/settle) — escrow releases BTC to the agent, fiat arrives in your account</li>
             </>
           )}
         </ol>
       </div>
-
-      {!hasWallet && isBuy && (
-        <div className="flex items-start gap-3 rounded-lg border border-blue-500/30 bg-blue-500/5 p-4">
-          <Info className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
-          <div className="text-sm">
-            <p className="font-medium text-blue-600">Wallet recommended</p>
-            <p className="text-muted-foreground">Link a Lightning wallet via NWC to receive your Bitcoin payout instantly. <Link to="/wallet" className="font-medium text-foreground underline">Connect wallet</Link>.</p>
-          </div>
-        </div>
-      )}
-
-      {hasWallet && !isBuy && (
-        <div className="flex items-center justify-between rounded-lg bg-muted/50 p-3 text-sm">
-          <span className="text-muted-foreground">Available balance</span>
-          <strong>{formatSats(balance)}</strong>
-        </div>
-      )}
 
       {/* Agent selector with refresh */}
       <div>
@@ -559,9 +498,9 @@ function SwapForm({ swapType, preselectedAgent }: { swapType: SwapType; preselec
       )}
 
       <div>
-        <Label htmlFor="swap-payout">{isBuy ? 'Fiat payment details' : 'Payout details'}</Label>
-        <Textarea id="swap-payout" placeholder={isBuy ? 'e.g. M-Pesa +254712345678' : 'e.g. Bank transfer — KCB 0123...'} value={payoutDetails} onChange={(e) => setPayoutDetails(e.target.value)} rows={2} />
-        <p className="mt-1 text-xs text-muted-foreground">Sent encrypted to the agent via NIP-17.</p>
+        <Label htmlFor="swap-payout">{isBuy ? 'Fiat payment details' : 'Fiat receiving details'}</Label>
+        <Textarea id="swap-payout" placeholder={isBuy ? 'e.g. M-Pesa send to +254712345678' : 'e.g. Bank transfer — KCB 0123...'} value={payoutDetails} onChange={(e) => setPayoutDetails(e.target.value)} rows={2} />
+        <p className="mt-1 text-xs text-muted-foreground">Sent encrypted to the agent via NIP-17. The escrow handles all BTC movement.</p>
       </div>
 
       <div>

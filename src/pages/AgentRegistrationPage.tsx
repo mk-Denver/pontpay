@@ -1,5 +1,6 @@
 import { useSeoMeta } from '@unhead/react';
 import { useState } from 'react';
+import { nip19 } from 'nostr-tools';
 import { Link } from 'react-router-dom';
 import {
   Store,
@@ -15,6 +16,8 @@ import {
   Coins,
   Tag,
   AlertCircle,
+  Share2,
+  Check,
 } from 'lucide-react';
 import { AppLayout } from '@/components/Navbar';
 import { Button } from '@/components/ui/button';
@@ -48,6 +51,7 @@ import {
 } from '@/hooks/useAgentRegistration';
 import { useAuthor } from '@/hooks/useAuthor';
 import type { SwapType } from '@/lib/pontmore';
+import { buildFullAgentLink } from '@/lib/agentLink';
 
 const ALL_CURRENCIES = ['USD', 'KES', 'UGX', 'NGN', 'GHS', 'TZS', 'RWF', 'EUR', 'GBP'];
 const ESCROW_TYPES = [
@@ -596,6 +600,15 @@ export default function AgentRegistrationPage() {
                   </AlertDialogContent>
                 </AlertDialog>
               )}
+
+              {isRegistered && user && input.price && (
+                <ShareLinkButton
+                  agentNpub={nip19.npubEncode(user.pubkey)}
+                  offerDTag={`pontmore/swap@1:${input.currency}:${input.direction === 'sell' ? 'sell' : 'buy'}`}
+                  escrowCoordinate={`${30361}:${user.pubkey}:${input.escrowDTag || 'escrow'}`}
+                  relays={input.relays.filter(Boolean)}
+                />
+              )}
             </div>
 
             <Button asChild variant="ghost">
@@ -604,8 +617,36 @@ export default function AgentRegistrationPage() {
               </Link>
             </Button>
           </div>
-        </form>
+         </form>
       </div>
     </AppLayout>
+  );
+}
+
+/** Share link button — copies a shareable agent link to clipboard. */
+function ShareLinkButton({ agentNpub, offerDTag, escrowCoordinate, relays }: {
+  agentNpub: string;
+  offerDTag: string;
+  escrowCoordinate: string;
+  relays: string[];
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const link = buildFullAgentLink({ agentNpub, offerDTag, escrowCoordinate, relays });
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      console.error('Failed to copy link');
+    }
+  };
+
+  return (
+    <Button type="button" variant="outline" onClick={handleCopy}>
+      {copied ? <Check className="h-4 w-4" /> : <Share2 className="h-4 w-4" />}
+      {copied ? 'Link copied!' : 'Share swap link'}
+    </Button>
   );
 }

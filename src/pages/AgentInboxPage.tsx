@@ -26,12 +26,10 @@ import {
   X,
   Loader2,
   MessageSquare,
-  Zap,
   UserPlus,
   Lock,
   AlertCircle,
   Clock,
-  Wallet as WalletIcon,
   CheckCircle2,
   Shield,
 } from 'lucide-react';
@@ -54,7 +52,6 @@ import { useAgentRegistration } from '@/hooks/useAgentRegistration';
 import { useIncomingSwaps } from '@/hooks/useIncomingSwaps';
 import { useSwapStateMachine } from '@/hooks/useSwapStateMachine';
 import { useSwapMessages, type SwapPayloadType, type SwapMessage } from '@/hooks/useSwapMessages';
-import { useUnifiedWallet } from '@/hooks/useUnifiedWallet';
 import { useAuthor } from '@/hooks/useAuthor';
 import {
   formatSats,
@@ -375,12 +372,8 @@ function CoordRequestCard({ coord, onClick }: { coord: PontmoreCoordination; onC
 function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
   const { user } = useCurrentUser();
   const { publishCoordinationAction } = useSwapStateMachine();
-  const { useSwapInbox, sendMessage, hasNip44 } = useSwapMessages();
-  const { hasWallet, payInvoice, makeInvoice, isPaying, isCreatingInvoice } = useUnifiedWallet();
-  const { data: messages } = useSwapInbox(coord.coordinationId);
+  const { hasNip44 } = useSwapMessages();
   const [actionPending, setActionPending] = useState<string | null>(null);
-  const [payingInvoice, setPayingInvoice] = useState(false);
-  const [generatingInvoice, setGeneratingInvoice] = useState(false);
 
   const myPubkey = user?.pubkey ?? '';
   const actions = useMemo(() => getAgentActions(coord, myPubkey), [coord, myPubkey]);
@@ -406,68 +399,11 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
     }
   };
 
-  // Extract any invoice from the NIP-17 messages (for buy, customer sends invoice)
-  const customerInvoice = messages?.find(
-    (m) => m.payload.type === 'invoice' && m.senderPubkey === customerPubkey,
-  );
-
-  // Agent pays the customer's Lightning invoice (for buy direction)
-  const handlePayInvoice = async () => {
-    if (!customerInvoice) return;
-    setPayingInvoice(true);
-    try {
-      const result = await payInvoice(customerInvoice.payload.data);
-      if (result) {
-        // Only settle if we're in the correct state and authorized
-        if (coord.state === 'settlement_authorized' && isAuthorizedSigner('core/settle', myPubkey, coord)) {
-          await publishCoordinationAction.mutateAsync({
-            coordinationId: coord.coordinationId,
-            action: 'core/settle',
-            prevEventId: chainTip,
-          });
-        }
-      }
-    } catch (err) {
-      console.error('Invoice payment failed:', err);
-      alert('Failed to pay the Lightning invoice. Please try again.');
-    } finally {
-      setPayingInvoice(false);
-    }
-  };
-
-  // Agent generates a Lightning invoice and sends it to the customer (for sell direction)
-  const handleGenerateAndSendInvoice = async () => {
-    const sats = parseInt(coord.terms.bitcoin.amount, 10);
-    if (isNaN(sats) || sats <= 0) return;
-    setGeneratingInvoice(true);
-    try {
-      const result = await makeInvoice(sats, `Pontmore sell ${coord.coordinationId.slice(0, 8)}`);
-      if (result) {
-        await sendMessage.mutateAsync({
-          swapId: coord.coordinationId,
-          recipientPubkey: customerPubkey,
-          payloadType: 'invoice',
-          data: result.invoice,
-          label: `Sell ${coord.terms.bitcoin.amount} sats — pay this invoice`,
-        });
-      }
-    } catch (err) {
-      console.error('Invoice generation failed:', err);
-      alert('Failed to generate Lightning invoice. Please try again.');
-    } finally {
-      setGeneratingInvoice(false);
-    }
-  };
-
   const isTerminal = TERMINAL_STATES.includes(coord.state);
   const currentIndex = STATE_FLOW.indexOf(coord.state);
-  const hasSentInvoice = messages?.some(
-    (m) => m.payload.type === 'invoice' && m.senderPubkey === myPubkey,
-  );
 
   // Single guard for ALL async action handlers to prevent chain forks
-  const isAnyActionPending = actionPending !== null || payingInvoice || generatingInvoice ||
-    publishCoordinationAction.isPending;
+  const isAnyActionPending = actionPending !== null || publishCoordinationAction.isPending;
 
   return (
     <div className="space-y-5">
@@ -519,78 +455,6 @@ function CoordDetailPanel({ coord }: { coord: PontmoreCoordination }) {
           </Badge>
         )}
       </div>
-
-      {/* Lightning payment actions */}
-      {coord.state === 'accepted' && (
-        <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
-          <p className="mb-3 text-sm font-medium flex items-center gap-2">
-            <Zap className="h-4 w-4" /> Lightning payment
-          </p>
-
-          {coord.swapType === 'buy' && (
-            <div>
-              {customerInvoice ? (
-                <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Customer sent a Lightning invoice. Secure the escrow, then
-                    pay the invoice to send BTC after confirming fiat.
-                  </p>
-                  <code className="block truncate rounded bg-background px-2 py-1.5 text-xs">
-                    {customerInvoice.payload.data.slice(0, 50)}...
-                  </code>
-                  {hasWallet ? (
-                    <Button onClick={handlePayInvoice} disabled={isAnyActionPending || payingInvoice || isPaying} size="sm" className="w-full">
-                      {payingInvoice || isPaying ? (
-                        <><Loader2 className="h-4 w-4 animate-spin" /> Paying invoice…</>
-                      ) : (
-                        <><Zap className="h-4 w-4" /> Pay invoice ({formatSats(coord.terms.bitcoin.amount)})</>
-                      )}
-                    </Button>
-                  ) : (
-                    <div className="flex items-center gap-2 text-xs text-amber-600">
-                      <WalletIcon className="h-4 w-4" /> Connect a wallet to pay
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Waiting for the customer to send a Lightning invoice via NIP-17.
-                </p>
-              )}
-            </div>
-          )}
-
-          {coord.swapType === 'sell' && (
-            <div>
-              {hasSentInvoice ? (
-                <p className="text-xs text-green-600 flex items-center gap-1.5">
-                  <CheckCircle2 className="h-4 w-4" /> Invoice sent to customer.
-                  They'll pay it to send BTC. Confirm once the Lightning
-                  payment arrives.
-                </p>
-              ) : hasWallet ? (
-                <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Generate a Lightning invoice for the customer to pay
-                    ({formatSats(coord.terms.bitcoin.amount)}).
-                  </p>
-                  <Button onClick={handleGenerateAndSendInvoice} disabled={isAnyActionPending || generatingInvoice || isCreatingInvoice} size="sm" className="w-full">
-                    {generatingInvoice || isCreatingInvoice ? (
-                      <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</>
-                    ) : (
-                      <><Zap className="h-4 w-4" /> Generate & send invoice</>
-                    )}
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 text-xs text-amber-600">
-                  <WalletIcon className="h-4 w-4" /> Connect a wallet to generate an invoice
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Action chain log */}
       {coord.actions.length > 0 && (
@@ -702,9 +566,8 @@ function PrivateLane({ coord, customerPubkey, hasNip44 }: { coord: PontmoreCoord
 
   const payloadTypeOptions: { value: SwapPayloadType; label: string }[] = [
     { value: 'message', label: 'Message' },
-    { value: 'payment_proof', label: 'Payment proof' },
+    { value: 'bank_details', label: 'Fiat payment details' },
     { value: 'payout_confirmation', label: 'Payout confirmation' },
-    { value: 'invoice', label: 'Lightning invoice' },
   ];
 
   return (
@@ -747,8 +610,8 @@ function PrivateLane({ coord, customerPubkey, hasNip44 }: { coord: PontmoreCoord
         </div>
         <Textarea
           placeholder={
-            sendType === 'invoice' ? 'Paste Lightning invoice (lnbc...)...'
-            : sendType === 'payment_proof' ? 'Payment proof (preimage, receipt)...'
+            sendType === 'bank_details' ? 'e.g. M-Pesa send to +254712345678'
+            : sendType === 'payout_confirmation' ? 'Confirm fiat payout sent...'
             : 'Enter message to send encrypted to the customer...'
           }
           value={sendData}
